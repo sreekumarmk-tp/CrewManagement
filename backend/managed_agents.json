@@ -1,0 +1,23 @@
+{
+  "environment_id": "env_019A2DbnrkJpoGat3segbVpa",
+  "coordinator_agent_id": "agent_01K4H9tKKQcA4r82zGJTQyEM",
+  "specialists": {
+    "crew_matching": {
+      "agent_id": "agent_013ztWoUYztKUwrrwKLW6NvG",
+      "name": "Crew Matching Agent"
+    },
+    "travel": {
+      "agent_id": "agent_01Ctt1zPdMP5SU5fNkrEr1XB",
+      "name": "Travel Agent"
+    },
+    "notification": {
+      "agent_id": "agent_01AnNFdrPoDKU6JUCtAhSRTD",
+      "name": "Notification Agent"
+    },
+    "compliance": {
+      "agent_id": "agent_01SLVYgNAsNn3ArmRZpD6FLg",
+      "name": "Compliance Agent"
+    }
+  },
+  "model": "claude-sonnet-4-6"
+}

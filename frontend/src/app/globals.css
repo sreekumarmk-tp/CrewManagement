@@ -1,0 +1,97 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: #0a1628;
+  --foreground: #e2e8f0;
+}
+
+body {
+  color: var(--foreground);
+  background: var(--background);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #0d1f3c;
+}
+::-webkit-scrollbar-thumb {
+  background: #1e3a5f;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #00d4ff50;
+}
+
+/* Glow animations */
+@keyframes glow-pulse {
+  0%, 100% { box-shadow: 0 0 10px #00d4ff30; }
+  50% { box-shadow: 0 0 25px #00d4ff60, 0 0 50px #00d4ff20; }
+}
+
+@keyframes data-flow {
+  0% { stroke-dashoffset: 100; opacity: 0.3; }
+  50% { opacity: 1; }
+  100% { stroke-dashoffset: -100; opacity: 0.3; }
+}
+
+.glow-card {
+  animation: glow-pulse 3s ease-in-out infinite;
+}
+
+.data-flow-line {
+  stroke-dasharray: 10;
+  animation: data-flow 2s linear infinite;
+}
+
+/* Agent status indicators */
+.agent-running .agent-dot {
+  animation: ping 1s cubic-bezier(0, 0, 0.2, 1) infinite;
+  background-color: #3b82f6;
+}
+
+.agent-completed .agent-dot {
+  background-color: #22c55e;
+}
+
+.agent-failed .agent-dot {
+  background-color: #ef4444;
+}
+
+/* Glass morphism */
+.glass {
+  background: rgba(13, 31, 60, 0.8);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(30, 58, 95, 0.5);
+}
+
+/* Table row hover */
+.crew-row:hover {
+  background: rgba(0, 212, 255, 0.05);
+  border-color: rgba(0, 212, 255, 0.2);
+}
+
+/* Gradient text */
+.gradient-text {
+  background: linear-gradient(135deg, #00d4ff, #0099cc);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Animated border */
+@keyframes border-flow {
+  0% { border-color: rgba(0, 212, 255, 0.3); }
+  50% { border-color: rgba(0, 212, 255, 0.8); }
+  100% { border-color: rgba(0, 212, 255, 0.3); }
+}
+
+.active-workflow-border {
+  animation: border-flow 2s ease-in-out infinite;
+}

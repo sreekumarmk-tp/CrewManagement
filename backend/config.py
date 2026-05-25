@@ -1,0 +1,81 @@
+from pydantic_settings import BaseSettings
+from typing import Optional
+import json
+import os
+
+
+class Settings(BaseSettings):
+    app_name: str = "Maritime Crew Orchestrator"
+    app_version: str = "1.0.0"
+    debug: bool = True
+
+    # Anthropic
+    anthropic_api_key: str = os.getenv("ANTHROPIC_API_KEY", "")
+    claude_model: str = "claude-sonnet-4-6"
+    claude_model_fast: str = "claude-haiku-4-5-20251001"
+
+    # Managed Agents (client.beta.agents / sessions / environments).
+    # The persisted environment + coordinator agent are created ONCE by
+    # scripts/setup_managed_agents.py and their IDs cached in managed_agents_ids_file.
+    # They can also be injected via env vars for container deploys.
+    managed_agents_ids_file: str = os.getenv(
+        "MANAGED_AGENTS_IDS_FILE",
+        os.path.join(os.path.dirname(__file__), "managed_agents.json"),
+    )
+    managed_environment_id: str = os.getenv("MANAGED_ENVIRONMENT_ID", "")
+    managed_coordinator_agent_id: str = os.getenv("MANAGED_COORDINATOR_AGENT_ID", "")
+    # Wall-clock guard for a single session turn (Phase 1 / Phase 2).
+    session_turn_timeout_seconds: int = 300
+
+    # Database
+    database_url: str = os.getenv(
+        "DATABASE_URL", "postgresql+asyncpg://postgres:password@localhost:5432/maritime_crew"
+    )
+
+    # Redis
+    redis_url: str = os.getenv("REDIS_URL", "redis://localhost:6379")
+
+    # Langfuse (optional observability)
+    langfuse_public_key: str = os.getenv("LANGFUSE_PUBLIC_KEY", "")
+    langfuse_secret_key: str = os.getenv("LANGFUSE_SECRET_KEY", "")
+    langfuse_host: str = os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com")
+
+    # CORS
+    cors_origins: list[str] = ["http://localhost:3000", "http://localhost:3001"]
+
+    # Agent config
+    max_agent_tokens: int = 4096
+    max_agent_retries: int = 3
+    agent_timeout_seconds: int = 120
+    confidence_threshold: float = 0.75
+
+    class Config:
+        env_file = ".env"
+        extra = "ignore"
+
+
+settings = Settings()
+
+
+def _load_managed_ids_from_file() -> None:
+    """Populate Managed Agents IDs from the cache file written by setup, unless
+    already supplied via env vars (env vars win)."""
+    if settings.managed_environment_id and settings.managed_coordinator_agent_id:
+        return
+    path = settings.managed_agents_ids_file
+    if not path or not os.path.exists(path):
+        return
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except Exception:
+        return
+    settings.managed_environment_id = (
+        settings.managed_environment_id or data.get("environment_id", "")
+    )
+    settings.managed_coordinator_agent_id = (
+        settings.managed_coordinator_agent_id or data.get("coordinator_agent_id", "")
+    )
+
+
+_load_managed_ids_from_file()
