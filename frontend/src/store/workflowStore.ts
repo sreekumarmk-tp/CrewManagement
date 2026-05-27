@@ -20,6 +20,18 @@ interface AgentLiveState {
   confidence_score?: number;
 }
 
+export interface SignOnOutcome {
+  crewId?: string;
+  crewName?: string;
+  crewRank?: string;
+  matchConfidence?: number;
+  phase: "validating" | "signed_on" | "rejected";
+  complianceStatus?: string;
+  complianceScore?: number;
+  reasons?: string[]; // warnings (conditional) or failures (rejected)
+  recommendation?: string;
+}
+
 interface WorkflowStore {
   // Crew data
   signOnCrew: CrewMember[];
@@ -45,6 +57,10 @@ interface WorkflowStore {
   events: WSEvent[];
   addEvent: (e: WSEvent) => void;
   clearEvents: () => void;
+
+  // Sign-on outcome for the active workflow: which crew was matched + the
+  // compliance verdict (signed on / rejected + reasons).
+  signOnOutcome: SignOnOutcome | null;
 
   // WebSocket event handler
   handleWSEvent: (event: WSEvent) => void;
@@ -101,9 +117,14 @@ export const useWorkflowStore = create<WorkflowStore>()(
           agentStates: JSON.parse(JSON.stringify(DEFAULT_AGENT_STATES)),
         }),
 
+      signOnOutcome: null,
+
       events: [],
+      // Keep a full session's worth of events (a multiagent run emits many);
+      // the buffer is wiped on the next sign-off (workflow_created), so it stays
+      // bounded without dropping logs mid-session.
       addEvent: (e) =>
-        set((s) => ({ events: [e, ...s.events].slice(0, 200) })),
+        set((s) => ({ events: [e, ...s.events].slice(0, 2000) })),
       clearEvents: () => set({ events: [] }),
 
       handleWSEvent: (event) => {
@@ -115,12 +136,60 @@ export const useWorkflowStore = create<WorkflowStore>()(
 
         switch (event.event_type) {
           case "workflow_created":
+            // New session → wipe the console so the trace shows only this run
+            // (this also restarts per-agent iteration numbering at 1). Keep the
+            // triggering event itself as the first line.
+            set({ events: [event], signOnOutcome: null });
             updateActiveWorkflow({
               workflow_id: data.workflow_id as string,
               status: "running",
             });
             get().resetAgentStates();
             updateAgentState("Master Agent", { status: "running" });
+            break;
+
+          case "auto_compliance":
+            set({
+              signOnOutcome: {
+                crewId: data.candidate_id as string,
+                crewName: data.candidate_name as string,
+                crewRank: data.candidate_rank as string,
+                matchConfidence: data.match_confidence as number,
+                phase: "validating",
+              },
+            });
+            break;
+
+          case "crew_signed_on":
+            set({
+              signOnOutcome: {
+                crewId: data.crew_id as string,
+                crewName: data.crew_name as string,
+                crewRank: data.crew_rank as string,
+                matchConfidence: data.match_confidence as number,
+                phase: "signed_on",
+                complianceStatus: data.compliance_status as string,
+                complianceScore: data.compliance_score as number,
+                reasons: (data.warnings as string[]) || [],
+                recommendation: data.recommendation as string,
+              },
+            });
+            break;
+
+          case "sign_on_rejected":
+            set({
+              signOnOutcome: {
+                crewId: data.crew_id as string,
+                crewName: data.crew_name as string,
+                crewRank: data.crew_rank as string,
+                matchConfidence: data.match_confidence as number,
+                phase: "rejected",
+                complianceStatus: data.compliance_status as string,
+                complianceScore: data.compliance_score as number,
+                reasons: (data.failures as string[]) || [],
+                recommendation: data.recommendation as string,
+              },
+            });
             break;
 
           case "agent_started":

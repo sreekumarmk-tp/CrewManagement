@@ -60,6 +60,40 @@ def _to_result_text(output: Any) -> str:
         return str(output)
 
 
+# Built-in toolset commands that, when they touch a path/command mentioning a
+# skill, indicate the hosted agent is loading one of its configured Skills. There
+# is no first-class "skill used" event in the managed stream, so this is the
+# best-effort signal for the console's Skills lane.
+_SKILL_FILE_TOOLS = ("read", "bash", "glob", "grep", "view")
+
+
+def _looks_like_skill_access(payload: Dict[str, Any]) -> bool:
+    name = (payload.get("name") or "").lower()
+    if name not in _SKILL_FILE_TOOLS:
+        return False
+    try:
+        blob = json.dumps(payload.get("input") or {}, default=str).lower()
+    except Exception:
+        return False
+    return "skill" in blob
+
+
+def _event_category(etype: str, payload: Dict[str, Any]) -> str:
+    """Tag an event for the UI console lanes: context | loop | skill.
+
+    Survives the event-type rename in master_agent (it lives in the payload, not
+    the type), so the frontend can group by `data.category` directly.
+    """
+    if etype == "agent.thread_context_compacted":
+        return "context"
+    if etype == "agent.tool_use" and _looks_like_skill_access(payload):
+        return "skill"
+    # Everything else in the agent loop — model requests, tool calls, thread
+    # lifecycle, messages, thinking. model-usage events also carry cache fields
+    # the frontend additionally surfaces in the Context lane.
+    return "loop"
+
+
 def _summarize_event(event: Any) -> Dict[str, Any]:
     """Build a JSON-serializable payload from a session event for relay/inspection."""
     etype = getattr(event, "type", "")
@@ -77,16 +111,28 @@ def _summarize_event(event: Any) -> Dict[str, Any]:
     elif etype in ("agent.custom_tool_use", "agent.tool_use", "agent.mcp_tool_use"):
         payload["name"] = getattr(event, "name", None)
         payload["input"] = _coerce_input(getattr(event, "input", None))
+    elif etype in ("agent.tool_result", "agent.mcp_tool_result"):
+        payload["name"] = getattr(event, "name", None)
+        payload["is_error"] = bool(getattr(event, "is_error", False))
+    elif etype == "agent.thread_context_compacted":
+        # Context management: history was summarized to fit the window.
+        pre = getattr(event, "pre_compaction_tokens", None)
+        if pre is not None:
+            payload["pre_compaction_tokens"] = pre
     elif etype == "span.model_request_end":
         mu = getattr(event, "model_usage", None)
         if mu is not None:
             payload["model_usage"] = {
                 "input_tokens": getattr(mu, "input_tokens", 0) or 0,
                 "output_tokens": getattr(mu, "output_tokens", 0) or 0,
+                "cache_read_input_tokens": getattr(mu, "cache_read_input_tokens", 0) or 0,
+                "cache_creation_input_tokens": getattr(mu, "cache_creation_input_tokens", 0) or 0,
             }
     elif etype in ("session.status_idle", "session.thread_status_idle"):
         sr = getattr(event, "stop_reason", None)
         payload["stop_reason"] = getattr(sr, "type", None) if sr else None
+
+    payload["category"] = _event_category(etype, payload)
     return payload
 
 
@@ -144,6 +190,56 @@ class ManagedAgentsClient:
             "specialists": specialists,
             "model": settings.claude_model,
         }
+
+    async def update_skills(self) -> Dict[str, Any]:
+        """
+        Apply the skills configured in registry.py to the EXISTING agents named in
+        managed_agents.json, in place. Each agent keeps its ID; agents.update() bumps
+        it to a new immutable version carrying the skills.
+
+        We re-assert each agent's full config (rebuilt from the registry — the same
+        source setup() used) alongside the skills, so prompts and tools can't be
+        dropped regardless of the update endpoint's merge semantics. agents.update()
+        requires the current version (optimistic lock), so we retrieve it first.
+        Safe to re-run.
+        """
+        path = settings.managed_agents_ids_file
+        with open(path) as f:
+            ids = json.load(f)
+
+        results: Dict[str, Any] = {}
+
+        # Specialists: rebuild each full config (now includes skills) and update in place.
+        specialist_cfgs = {c["key"]: c for c in specialist_agent_configs()}
+        for key, info in ids["specialists"].items():
+            cfg = dict(specialist_cfgs[key])
+            cfg.pop("key")
+            current = await self.client.beta.agents.retrieve(info["agent_id"])
+            agent = await self.client.beta.agents.update(
+                info["agent_id"], version=current.version, **cfg
+            )
+            results[key] = {
+                "agent_id": agent.id,
+                "version": agent.version,
+                "skills": [s.get("skill_id") for s in cfg.get("skills", [])],
+            }
+            log.info("update_skills.specialist", key=key, agent_id=agent.id, version=agent.version)
+
+        # Coordinator: rebuild full config with the same roster, now with skills.
+        roster_ids = [info["agent_id"] for info in ids["specialists"].values()]
+        coord_cfg = coordinator_agent_config(roster_ids)
+        current = await self.client.beta.agents.retrieve(ids["coordinator_agent_id"])
+        coord = await self.client.beta.agents.update(
+            ids["coordinator_agent_id"], version=current.version, **coord_cfg
+        )
+        results["coordinator"] = {
+            "agent_id": coord.id,
+            "version": coord.version,
+            "skills": [s.get("skill_id") for s in coord_cfg.get("skills", [])],
+        }
+        log.info("update_skills.coordinator", agent_id=coord.id, version=coord.version)
+
+        return results
 
     # ── Data plane (per workflow) ──────────────────────────────────────────────
 

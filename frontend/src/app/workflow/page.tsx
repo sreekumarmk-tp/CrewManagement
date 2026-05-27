@@ -2,12 +2,14 @@
 import { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import Link from "next/link";
-import { Anchor, ArrowLeft, RefreshCw, ChevronDown, ChevronUp, Zap, Clock, DollarSign, Target } from "lucide-react";
+import { Anchor, ArrowLeft, RefreshCw, ChevronDown, ChevronUp, Zap, Clock } from "lucide-react";
 import { workflowApi } from "@/lib/api";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import { useWorkflowStore } from "@/store/workflowStore";
+import AgentConsole from "@/components/agents/AgentConsole";
+import AgentCapabilitiesCards from "@/components/agents/AgentCapabilitiesCards";
 import type { WorkflowState, AgentExecution } from "@/types";
-import { cn, statusBg, agentIcon, formatDuration, formatCost } from "@/lib/utils";
+import { cn, statusBg, statusColor, agentIcon, formatDuration, formatCost } from "@/lib/utils";
 
 export default function WorkflowPage() {
   const [workflows, setWorkflows] = useState<WorkflowState[]>([]);
@@ -57,8 +59,14 @@ export default function WorkflowPage() {
       </nav>
 
       <div className="max-w-screen-2xl mx-auto px-6 py-8 space-y-6">
+        {/* Agents — tools & skills cards */}
+        <AgentCapabilitiesCards />
+
         {/* Agent Flow Graph */}
         <AgentFlowGraph agentStates={agentStates} />
+
+        {/* Agent Console — live context / loop / skill activity */}
+        <AgentConsole />
 
         {/* Workflow List */}
         <div className="glass rounded-2xl overflow-hidden">
@@ -93,85 +101,126 @@ export default function WorkflowPage() {
   );
 }
 
-function AgentFlowGraph({ agentStates }: { agentStates: Record<string, { status: string; tool_calls: number }> }) {
-  const agents = [
-    { name: "Master Agent", x: 50, y: 30, color: "#00d4ff" },
-    { name: "Crew Matching Agent", x: 20, y: 65, color: "#a855f7" },
-    { name: "Travel Agent", x: 50, y: 65, color: "#3b82f6" },
-    { name: "Notification Agent", x: 80, y: 65, color: "#f59e0b" },
-    { name: "Compliance Agent", x: 50, y: 90, color: "#22c55e" },
+type FlowState = { status: string; tool_calls: number; current_task?: string };
+
+function AgentFlowGraph({ agentStates }: { agentStates: Record<string, FlowState> }) {
+  // Master on top; all four specialists aligned in one row beneath it. Edges fan
+  // out from the master so it's unambiguous which agent is being delegated to.
+  const master = { name: "Master Agent", x: 50, y: 18 };
+  const specialists = [
+    { name: "Crew Matching Agent", x: 14, y: 70 },
+    { name: "Travel Agent", x: 38, y: 70 },
+    { name: "Notification Agent", x: 62, y: 70 },
+    { name: "Compliance Agent", x: 86, y: 70 },
   ];
+  const activeCount = specialists.filter((s) => agentStates[s.name]?.status === "running").length;
 
   return (
     <div className="glass rounded-2xl p-6">
-      <h2 className="text-base font-semibold text-white mb-4 flex items-center gap-2">
-        <Zap className="w-4 h-4 text-ocean-accent" />
-        Live Agent Orchestration Graph
-      </h2>
-      <div className="relative h-64 bg-ocean/30 rounded-xl overflow-hidden border border-ocean-border/30">
-        {/* SVG connections */}
-        <svg className="absolute inset-0 w-full h-full">
-          {/* Master → 3 agents */}
-          {[20, 50, 80].map((x) => (
-            <line
-              key={x}
-              x1="50%" y1="30%" x2={`${x}%`} y2="65%"
-              stroke="#1e3a5f" strokeWidth="1.5"
-              strokeDasharray={agentStates["Master Agent"]?.status === "running" ? "5" : "0"}
-              className={agentStates["Master Agent"]?.status === "running" ? "data-flow-line" : ""}
-            />
-          ))}
-          {/* Travel → Compliance */}
-          <line x1="50%" y1="65%" x2="50%" y2="90%"
-            stroke="#1e3a5f" strokeWidth="1.5"
-            strokeDasharray={agentStates["Travel Agent"]?.status === "completed" ? "5" : "0"}
-          />
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-base font-semibold text-white flex items-center gap-2">
+          <Zap className="w-4 h-4 text-ocean-accent" />
+          Live Agent Orchestration
+        </h2>
+        <span className="text-xs text-gray-500">
+          {activeCount > 0
+            ? `Master is calling ${activeCount} agent${activeCount > 1 ? "s" : ""} ↓`
+            : "Master delegates to the highlighted agents ↓"}
+        </span>
+      </div>
+
+      <div className="relative h-72 bg-ocean/30 rounded-xl border border-ocean-border/30 overflow-hidden">
+        {/* Delegation edges: master → each specialist. Active edges animate the
+            dash flow downward (master → agent), showing the call direction. */}
+        <svg className="absolute inset-0 w-full h-full pointer-events-none">
+          {specialists.map((s) => {
+            const status = agentStates[s.name]?.status || "idle";
+            const active = status === "running";
+            const done = status === "completed";
+            return (
+              <line
+                key={s.name}
+                x1="50%"
+                y1="28%"
+                x2={`${s.x}%`}
+                y2="61%"
+                stroke={active ? "#00d4ff" : done ? "#22c55e66" : "#1e3a5f"}
+                strokeWidth={active ? 2.5 : 1.5}
+                className={active ? "data-flow-line" : ""}
+              />
+            );
+          })}
         </svg>
 
-        {/* Agent nodes */}
-        {agents.map((agent) => {
-          const state = agentStates[agent.name];
-          const status = state?.status || "idle";
-          return (
-            <motion.div
-              key={agent.name}
-              style={{ left: `${agent.x}%`, top: `${agent.y}%`, transform: "translate(-50%, -50%)" }}
-              className="absolute"
-              animate={status === "running" ? { scale: [1, 1.05, 1] } : {}}
-              transition={{ repeat: Infinity, duration: 2 }}
-            >
-              <div className={cn(
-                "px-3 py-2 rounded-xl border text-center min-w-[120px] transition-all",
-                status === "running"
-                  ? "bg-ocean-card border-ocean-accent/60 shadow-lg"
-                  : status === "completed"
-                  ? "bg-green-900/30 border-green-500/40"
-                  : status === "failed"
-                  ? "bg-red-900/30 border-red-500/40"
-                  : "bg-ocean-card border-ocean-border/40"
-              )}>
-                <div className="text-base">{agentIcon(agent.name)}</div>
-                <div className="text-xs font-medium text-white leading-tight mt-0.5">
-                  {agent.name.replace(" Agent", "")}
-                </div>
-                <div className={cn("text-xs mt-0.5", statusBg(status).split(" ")[1] || "text-gray-500")}>
-                  {status}
-                </div>
-                {state?.tool_calls > 0 && (
-                  <div className="text-xs text-gray-600 mt-0.5">{state.tool_calls} tools</div>
-                )}
-              </div>
-              {status === "running" && (
-                <motion.div
-                  className="absolute inset-0 rounded-xl border border-ocean-accent/30"
-                  animate={{ opacity: [0.3, 0.8, 0.3] }}
-                  transition={{ repeat: Infinity, duration: 1.5 }}
-                />
-              )}
-            </motion.div>
-          );
-        })}
+        <FlowNode node={master} state={agentStates[master.name]} isMaster />
+        {specialists.map((s) => (
+          <FlowNode key={s.name} node={s} state={agentStates[s.name]} />
+        ))}
       </div>
+    </div>
+  );
+}
+
+function FlowNode({
+  node,
+  state,
+  isMaster = false,
+}: {
+  node: { name: string; x: number; y: number };
+  state?: FlowState;
+  isMaster?: boolean;
+}) {
+  const status = state?.status || "idle";
+  const active = status === "running";
+  return (
+    <div
+      className="absolute"
+      style={{ left: `${node.x}%`, top: `${node.y}%`, transform: "translate(-50%, -50%)" }}
+    >
+      {/* Inbound delegation arrow — points into the agent the master is calling */}
+      {!isMaster && (
+        <div className="flex justify-center -mb-1">
+          <ChevronDown
+            className={cn(
+              "w-4 h-4 transition-colors",
+              active
+                ? "text-ocean-accent animate-bounce"
+                : status === "completed"
+                ? "text-green-500/50"
+                : "text-ocean-border"
+            )}
+          />
+        </div>
+      )}
+      <motion.div
+        animate={active ? { scale: [1, 1.04, 1] } : {}}
+        transition={{ repeat: Infinity, duration: 2 }}
+        className={cn(
+          "min-w-[118px] px-3 py-2 rounded-xl border text-center transition-all",
+          active
+            ? "bg-ocean-card border-ocean-accent/60 glow-card"
+            : status === "completed"
+            ? "bg-green-900/25 border-green-500/40"
+            : status === "failed"
+            ? "bg-red-900/25 border-red-500/40"
+            : status === "waiting"
+            ? "bg-orange-900/25 border-orange-500/40"
+            : status === "pending"
+            ? "bg-yellow-900/20 border-yellow-500/30"
+            : "bg-ocean-card border-ocean-border/40"
+        )}
+      >
+        <div className="text-lg leading-none">{agentIcon(node.name)}</div>
+        <div className="text-xs font-medium text-white leading-tight mt-1">
+          {node.name.replace(" Agent", "")}
+        </div>
+        <div className={cn("text-[10px] mt-0.5", statusColor(status))}>
+          {isMaster ? `orchestrator · ${status}` : status}
+        </div>
+        {!!state && state.tool_calls > 0 && (
+          <div className="text-[10px] text-gray-500 mt-0.5">{state.tool_calls} tool calls</div>
+        )}
+      </motion.div>
     </div>
   );
 }

@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import Link from "next/link";
 import toast, { Toaster } from "react-hot-toast";
@@ -13,6 +13,7 @@ import { useWebSocket } from "@/hooks/useWebSocket";
 import { crewApi, workflowApi } from "@/lib/api";
 import SignOffTab from "@/components/dashboard/SignOffTab";
 import SignOnTab from "@/components/dashboard/SignOnTab";
+import SignOnOutcomeCard from "@/components/dashboard/SignOnOutcomeCard";
 import AgentOrchestrationPanel from "@/components/agents/AgentOrchestrationPanel";
 import WorkflowTimeline from "@/components/workflow/WorkflowTimeline";
 
@@ -27,6 +28,7 @@ export default function DashboardPage() {
   const { isConnected } = useWebSocket();
   const [loading, setLoading] = useState(true);
   const [initiatingSignOff, setInitiatingSignOff] = useState<string | null>(null);
+  const lastCrewRefreshKey = useRef<string>("");
 
   useEffect(() => {
     loadCrew();
@@ -46,6 +48,21 @@ export default function DashboardPage() {
       setLoading(false);
     }
   };
+
+  // Re-fetch crew when the workflow changes a crew member — e.g. a matched
+  // candidate clears compliance and is signed on — so the Sign-Off / Sign-On
+  // tabs reflect it live without a manual reload.
+  useEffect(() => {
+    const latest = events[0];
+    if (!latest) return;
+    const triggers = ["crew_signed_on", "crew_updated", "workflow_completed"];
+    const key = `${latest.event_type}:${latest.timestamp}`;
+    if (triggers.includes(latest.event_type) && key !== lastCrewRefreshKey.current) {
+      lastCrewRefreshKey.current = key;
+      loadCrew();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [events]);
 
   const handleInitiateSignOff = async (crewId: string, crewName: string) => {
     setInitiatingSignOff(crewId);
@@ -216,6 +233,7 @@ export default function DashboardPage() {
 
         {/* ── Right: Agent Panel (4 cols) ───────────────────────────────────── */}
         <div className="col-span-12 xl:col-span-4 space-y-4">
+          <SignOnOutcomeCard />
           <AgentOrchestrationPanel />
           {activeWorkflow && <WorkflowTimeline workflow={activeWorkflow} />}
         </div>

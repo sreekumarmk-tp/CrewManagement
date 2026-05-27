@@ -48,7 +48,7 @@ class MasterAgent:
     # ── Phase 1: sign-off ───────────────────────────────────────────────────────
 
     async def orchestrate_sign_off(
-        self, workflow: WorkflowState, sign_off_crew: Dict[str, Any]
+        self, workflow: WorkflowState, sign_off_crew: Dict[str, Any], auto_proceed: bool = False
     ) -> WorkflowState:
         await self._emit_timeline(workflow, "Master Agent activated — opening coordinator session")
         workflow.status = WorkflowStatus.RUNNING
@@ -88,12 +88,22 @@ class MasterAgent:
         self._record_usage(workflow, turn["usage"])
 
         await self._emit_timeline(workflow, "Phase 1 complete — crew matched, travel arranged, captain notified")
-        workflow.status = WorkflowStatus.WAITING
-        await self._emit("master_waiting", {
-            "workflow_id": workflow.workflow_id,
-            "matched_crew": workflow.matched_crew,
-            "message": "Waiting for user to confirm sign-on",
-        })
+        if auto_proceed:
+            # The caller chains compliance immediately — keep the workflow RUNNING
+            # and skip the "waiting for confirmation" messaging.
+            workflow.status = WorkflowStatus.RUNNING
+            await self._emit("master_routing", {
+                "workflow_id": workflow.workflow_id,
+                "action": "Phase 1 complete — auto-proceeding to compliance for the matched crew",
+                "matched_crew": workflow.matched_crew,
+            })
+        else:
+            workflow.status = WorkflowStatus.WAITING
+            await self._emit("master_waiting", {
+                "workflow_id": workflow.workflow_id,
+                "matched_crew": workflow.matched_crew,
+                "message": "Waiting for user to confirm sign-on",
+            })
         return workflow
 
     # ── Phase 2: sign-on / compliance ────────────────────────────────────────────

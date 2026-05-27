@@ -81,7 +81,7 @@ class WorkflowService:
     ):
         try:
             master = MasterAgent(event_callback=self._event_callback)
-            updated = await master.orchestrate_sign_off(workflow, sign_off_crew)
+            updated = await master.orchestrate_sign_off(workflow, sign_off_crew, auto_proceed=True)
             await state_service.update_workflow(updated)
 
             # Persist the sign-off outcome to the crew table: the departing crew
@@ -101,6 +101,11 @@ class WorkflowService:
                 else:
                     log.warning("sign_off.crew_not_found_for_update", crew_id=crew_id)
 
+            # Auto-chain: validate the matched replacement's documents via Compliance,
+            # and on a pass/warning add them to the onboard (signoff) pool so they
+            # appear in the Sign-Off tab.
+            await self._auto_compliance_and_signon(master, updated, sign_off_crew)
+
             log.info("sign_off.orchestration.complete", workflow_id=workflow.workflow_id)
         except Exception as exc:
             log.error("sign_off.orchestration.error", error=str(exc))
@@ -109,6 +114,83 @@ class WorkflowService:
             await self._event_callback("workflow_failed", "Master Agent", {
                 "workflow_id": workflow.workflow_id,
                 "error": str(exc),
+            })
+
+    async def _auto_compliance_and_signon(
+        self, master: MasterAgent, workflow: WorkflowState, sign_off_crew: Dict[str, Any]
+    ) -> None:
+        """After matching, run Compliance on the matched crew's documents; on a
+        pass/warning, move that crew into the onboard (signoff) pool so it appears
+        in the Sign-Off tab. Runs on the SAME coordinator session as Phase 1.
+        """
+        matched_id = workflow.matched_crew_id or (workflow.matched_crew or {}).get("crew_id")
+        if not matched_id:
+            log.warning("auto_compliance.no_match", workflow_id=workflow.workflow_id)
+            return
+
+        # The matched candidate's full document set (passport/medical/visa/STCW/
+        # certifications) lives on the signon-pool row — that's what Compliance validates.
+        candidate = await get_crew_by_id(matched_id, pool="signon") or dict(workflow.matched_crew or {})
+        port = (sign_off_crew or {}).get("port", "Singapore")
+
+        matched = workflow.matched_crew or {}
+        await self._event_callback("auto_compliance", "Master Agent", {
+            "workflow_id": workflow.workflow_id,
+            "candidate_id": matched_id,
+            "candidate_name": candidate.get("name"),
+            "candidate_rank": candidate.get("rank"),
+            "match_confidence": matched.get("confidence_score"),
+            "match_reasons": matched.get("match_reasons", []),
+            "message": f"Sharing {candidate.get('name')}'s documents with Compliance for validation",
+        })
+
+        updated = await master.orchestrate_compliance(workflow, candidate, port)
+        await state_service.update_workflow(updated)
+
+        report = (updated.compliance_result or {}).get("compliance_report") or {}
+        status = report.get("overall_status", "unknown")
+        score = report.get("compliance_score")
+        warnings = report.get("warnings", []) or []
+        failures = report.get("failures", []) or []
+        recommendation = report.get("recommendation")
+
+        # Pass rule: 'passed' or 'warning' (conditional) sign the crew on; 'failed' rejects.
+        if status in ("passed", "warning"):
+            row = await update_crew(matched_id, pool="signoff", status="Onboard")
+            if row:
+                log.info("auto_compliance.signed_on", crew_id=matched_id, status=status)
+                await self._event_callback("crew_signed_on", "Compliance Agent", {
+                    "workflow_id": workflow.workflow_id,
+                    "crew_id": matched_id,
+                    "crew_name": candidate.get("name"),
+                    "crew_rank": candidate.get("rank"),
+                    "match_confidence": matched.get("confidence_score"),
+                    "compliance_status": status,
+                    "compliance_score": score,
+                    "warnings": warnings,            # conditional-approval caveats, if any
+                    "recommendation": recommendation,
+                    "message": (
+                        f"{candidate.get('name')} cleared compliance "
+                        f"({status}, {score}%) — added to onboard crew (Sign-Off tab)"
+                    ),
+                })
+            else:
+                log.warning("auto_compliance.signon_crew_not_found", crew_id=matched_id)
+        else:
+            log.info("auto_compliance.rejected", crew_id=matched_id, status=status)
+            await self._event_callback("sign_on_rejected", "Compliance Agent", {
+                "workflow_id": workflow.workflow_id,
+                "crew_id": matched_id,
+                "crew_name": candidate.get("name"),
+                "crew_rank": candidate.get("rank"),
+                "match_confidence": matched.get("confidence_score"),
+                "compliance_status": status,
+                "compliance_score": score,
+                "failures": failures,               # the reason(s) for rejection
+                "recommendation": recommendation,
+                "message": (
+                    f"{candidate.get('name')} did not clear compliance ({status}) — not signed on"
+                ),
             })
 
     async def initiate_sign_on(

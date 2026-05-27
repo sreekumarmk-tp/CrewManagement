@@ -15,6 +15,8 @@ Two responsibilities:
    hosted coordinator/sub-agents emit. Tool names are globally unique across the
    four specialists, so a single name→agent map is sufficient to route a call.
 """
+import json
+import os
 from typing import Any, Callable, Dict, List, Optional
 
 import structlog
@@ -67,18 +69,103 @@ Delegate everything, track everything, and never invent crew, travel, or complia
 that is the specialists' job. Keep your own messages concise and operational."""
 
 
+# ── Skill management ──────────────────────────────────────────────────────────
+# Every agent is "skill-managed": the `skills` field is always threaded through
+# agents.create() / agents.update() below, so each agent can load Anthropic's
+# prebuilt document skills on demand (the hosted loop pulls one in only when a task
+# needs it; max 20 per agent). The lists here just say WHICH skills each agent may
+# load. Edit freely, then run `python -m scripts.update_agent_skills` to apply the
+# change to the already-created agents in place (bumps each agent's version).
+def _skill(skill_id: str) -> Dict[str, str]:
+    """Reference an Anthropic prebuilt skill: one of xlsx / docx / pptx / pdf."""
+    return {"type": "anthropic", "skill_id": skill_id}
+
+
+# Per-specialist skill assignment (keyed by SPECIALIST_CLASSES key).
+SKILLS_BY_KEY: Dict[str, List[Dict[str, str]]] = {
+    "compliance":    [_skill("pdf"), _skill("docx"), _skill("xlsx")],  # certificates, port papers, reports
+    # The agents below are skill-managed but start with no skills attached.
+    # Suggested additions are in the comments — uncomment/edit as needed:
+    "travel":        [],  # e.g. [_skill("pdf"), _skill("docx")] for tickets / travel summaries
+    "crew_matching": [],  # e.g. [_skill("xlsx")] for roster / matching spreadsheets
+    "notification":  [],  # sends messages — document skills rarely needed
+}
+
+# The coordinator only routes and synthesizes text — no document skills by default.
+COORDINATOR_SKILLS: List[Dict[str, str]] = []  # e.g. [_skill("docx")] to emit summary docs
+
+
+# ── Custom skills ──────────────────────────────────────────────────────────────
+# Custom skills are authored locally under backend/skills/<name>/SKILL.md, uploaded
+# via scripts/upload_skills.py (which caches their ids in backend/skills.json), and
+# referenced by id. Map: agent key -> the custom-skill logical names it should load.
+_CUSTOM_SKILLS_BY_AGENT: Dict[str, List[str]] = {
+    "notification": ["maritime_comms"],  # Maritime Comms Templates / Style Guide
+}
+_SKILLS_CACHE = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", "skills.json"))
+
+
+def _custom_skill_refs(agent_key: str) -> List[Dict[str, str]]:
+    """Resolve an agent's custom-skill logical names to {type:custom, skill_id, version}
+    refs using the uploaded-skill ids in skills.json. Missing/un-uploaded skills are
+    skipped (so the app still runs before upload_skills has been run)."""
+    logical = _CUSTOM_SKILLS_BY_AGENT.get(agent_key, [])
+    if not logical:
+        return []
+    try:
+        with open(_SKILLS_CACHE) as f:
+            cache = json.load(f)
+    except Exception:
+        return []
+    refs: List[Dict[str, str]] = []
+    for name in logical:
+        entry = cache.get(name) or {}
+        if entry.get("skill_id"):
+            refs.append({"type": "custom", "skill_id": entry["skill_id"], "version": "latest"})
+        else:
+            log.warning("custom_skill.not_uploaded", skill=name, agent=agent_key)
+    return refs
+
+
+def skills_for_key(key: str) -> List[Dict[str, str]]:
+    """Skills configured for a specialist key — prebuilt (SKILLS_BY_KEY) plus any
+    uploaded custom skills mapped to this agent."""
+    return list(SKILLS_BY_KEY.get(key, [])) + _custom_skill_refs(key)
+
+
+def custom_skill_id_to_name() -> Dict[str, str]:
+    """Reverse map of uploaded custom skill ids -> their local logical name, so the
+    UI can show a readable label (e.g. 'maritime_comms') instead of 'skill_01V8…'."""
+    try:
+        with open(_SKILLS_CACHE) as f:
+            cache = json.load(f)
+    except Exception:
+        return {}
+    return {v.get("skill_id"): k for k, v in cache.items() if v.get("skill_id")}
+
+
 def specialist_agent_configs() -> List[Dict[str, Any]]:
     """Persisted-agent definitions for each specialist (one-time setup)."""
     configs: List[Dict[str, Any]] = []
     for key, cls in SPECIALIST_CLASSES.items():
         inst: BaseAgent = cls()
+        skills = skills_for_key(key)
+        tools: List[Dict[str, Any]] = list(inst.custom_tool_defs())
+        if skills:
+            # Skills are opened via the agent toolset's `read` tool (and their
+            # helper scripts run via `bash`), so a skill-bearing agent MUST carry
+            # the built-in toolset alongside its custom tools — otherwise
+            # agents.create/update rejects it: "skills require read to open
+            # their SKILL.md files".
+            tools.insert(0, {"type": "agent_toolset_20260401"})
         configs.append(
             {
                 "key": key,
                 "name": inst.name,
                 "model": settings.claude_model,
                 "system": inst.system_prompt(),
-                "tools": inst.custom_tool_defs(),
+                "tools": tools,
+                "skills": skills,
             }
         )
     return configs
@@ -96,6 +183,7 @@ def coordinator_agent_config(roster_agent_ids: List[str]) -> Dict[str, Any]:
         "model": settings.claude_model,
         "system": COORDINATOR_SYSTEM_ROLE,
         "tools": [{"type": "agent_toolset_20260401"}],
+        "skills": COORDINATOR_SKILLS,
         "multiagent": {
             "type": "coordinator",
             "agents": [{"type": "agent", "id": aid} for aid in roster_agent_ids],

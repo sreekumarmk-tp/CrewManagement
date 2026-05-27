@@ -4,8 +4,63 @@ from typing import Dict, Any
 
 from services.state_service import state_service
 from api.websockets.workflow_ws import manager
+from agents.managed.registry import (
+    COORDINATOR_NAME,
+    COORDINATOR_SKILLS,
+    coordinator_agent_config,
+    custom_skill_id_to_name,
+    specialist_agent_configs,
+)
 
 router = APIRouter(prefix="/monitoring", tags=["monitoring"])
+
+
+def _tool_labels(tools) -> list:
+    """Display label per tool: custom tools expose `name`; built-in toolsets expose `type`."""
+    return [t.get("name") or t.get("type") or "tool" for t in (tools or [])]
+
+
+def _skill_labels(skills, id_to_name) -> list:
+    """Readable label per skill: prebuilt skill ids are already friendly (pdf/docx);
+    custom skill ids are mapped back to their local name."""
+    out = []
+    for s in skills or []:
+        sid = s.get("skill_id")
+        if s.get("type") == "custom":
+            out.append(id_to_name.get(sid, sid))
+        else:
+            out.append(sid)
+    return out
+
+
+@router.get("/agents/skills", response_model=dict)
+async def get_agent_skills():
+    """Capabilities of each managed agent — both tools and skills.
+
+    Two distinct layers: `tools` are the agent's functions (custom tools like
+    sendMail, or the built-in agent toolset); `skills` are skill packages (prebuilt
+    pdf/docx/xlsx or custom). Single-sourced from registry.py.
+    """
+    id_to_name = custom_skill_id_to_name()
+    agents = [
+        {
+            "key": cfg["key"],
+            "name": cfg["name"],
+            "tools": _tool_labels(cfg.get("tools")),
+            "skills": _skill_labels(cfg.get("skills"), id_to_name),
+        }
+        for cfg in specialist_agent_configs()
+    ]
+    coordinator = coordinator_agent_config([])  # roster irrelevant — we only read its tools
+    agents.append(
+        {
+            "key": "coordinator",
+            "name": COORDINATOR_NAME,
+            "tools": _tool_labels(coordinator.get("tools")),
+            "skills": _skill_labels(COORDINATOR_SKILLS, id_to_name),
+        }
+    )
+    return {"agents": agents}
 
 
 @router.get("/metrics", response_model=dict)

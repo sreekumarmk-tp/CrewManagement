@@ -35,6 +35,18 @@ class Settings(BaseSettings):
     # Redis
     redis_url: str = os.getenv("REDIS_URL", "redis://localhost:6379")
 
+    # Email / SMTP — the Notification Agent sends real mail here.
+    # Defaults target MailHog (dev SMTP sink: SMTP on 1025, web UI on http://localhost:8025).
+    mail_enabled: bool = os.getenv("MAIL_ENABLED", "true").lower() == "true"
+    smtp_host: str = os.getenv("SMTP_HOST", "localhost")
+    smtp_port: int = int(os.getenv("SMTP_PORT", "1025"))
+    smtp_username: str = os.getenv("SMTP_USERNAME", "")
+    smtp_password: str = os.getenv("SMTP_PASSWORD", "")
+    smtp_use_tls: bool = os.getenv("SMTP_USE_TLS", "false").lower() == "true"
+    smtp_from: str = os.getenv("SMTP_FROM", "notifications@marinecrewos.local")
+    # Names (e.g. "Captain", "Shore Manager") are turned into <slug>@<this-domain>.
+    mail_default_domain: str = os.getenv("MAIL_DEFAULT_DOMAIN", "marinecrewos.local")
+
     # Langfuse (optional observability)
     langfuse_public_key: str = os.getenv("LANGFUSE_PUBLIC_KEY", "")
     langfuse_secret_key: str = os.getenv("LANGFUSE_SECRET_KEY", "")

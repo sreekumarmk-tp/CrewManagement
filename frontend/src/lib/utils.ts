@@ -34,7 +34,6 @@ export function statusColor(status: string): string {
     Matched: "text-purple-400",
     passed: "text-green-400",
     warning: "text-yellow-400",
-    failed: "text-red-400",
     PASSED: "text-green-400",
     WARNING: "text-yellow-400",
     FAILED: "text-red-400",

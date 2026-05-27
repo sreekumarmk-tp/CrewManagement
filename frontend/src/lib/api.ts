@@ -53,6 +53,19 @@ export const monitoringApi = {
 
   getAgentStatus: () =>
     api.get("/monitoring/agents/status").then(r => r.data),
+
+  getAgentSkills: () =>
+    api.get<{ agents: AgentSkills[] }>("/monitoring/agents/skills").then(r => r.data.agents),
 };
+
+// Capabilities of each managed agent. `tools` are its functions (custom tools
+// like sendMail, or the built-in toolset); `skills` are Anthropic document-skill
+// packages (pdf/docx/xlsx) — a separate layer.
+export interface AgentSkills {
+  key: string;
+  name: string;
+  tools: string[];
+  skills: string[];
+}
 
 export default api;
