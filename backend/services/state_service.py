@@ -64,6 +64,16 @@ class StateService:
         total_tokens = sum(w.total_tokens for w in workflows)
         total_cost = sum(w.total_cost for w in workflows)
 
+        # Prompt-cache observability (Step 1). The hit rate is over the *cacheable
+        # prefix* only: of the prompt-prefix tokens processed across all workflows,
+        # what fraction was served from the server-side cache (read) vs. written fresh
+        # (creation). Cold first turns write the cache (rate ~0); as the static
+        # coordinator/specialist prompts stay byte-stable, later turns read it (rate →100).
+        total_cache_read = sum(w.cache_read_tokens for w in workflows)
+        total_cache_creation = sum(w.cache_creation_tokens for w in workflows)
+        cacheable = total_cache_read + total_cache_creation
+        cache_hit_rate = round(total_cache_read / cacheable * 100, 1) if cacheable else 0.0
+
         durations = []
         for w in workflows:
             if w.completed_at and w.created_at:
@@ -112,6 +122,9 @@ class StateService:
             "success_rate": round(success_rate, 1),
             "total_tokens": total_tokens,
             "total_cost": round(total_cost, 6),
+            "cache_read_tokens": total_cache_read,
+            "cache_creation_tokens": total_cache_creation,
+            "cache_hit_rate": cache_hit_rate,
             "avg_workflow_duration_ms": int(avg_duration),
             "agent_metrics": agent_metrics,
         }

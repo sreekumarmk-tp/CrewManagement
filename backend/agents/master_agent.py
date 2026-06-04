@@ -229,10 +229,21 @@ class MasterAgent:
         # Turn-level usage covers the coordinator + all sub-agent threads. We can't
         # cleanly attribute it per specialist from the stream, so it accrues at the
         # workflow level (per-agent token columns therefore read 0 — by design).
-        workflow.total_tokens += usage.get("input_tokens", 0) + usage.get("output_tokens", 0)
+        inp = usage.get("input_tokens", 0)
+        out = usage.get("output_tokens", 0)
+        cache_read = usage.get("cache_read_input_tokens", 0)
+        cache_creation = usage.get("cache_creation_input_tokens", 0)
+        workflow.total_tokens += inp + out
+        workflow.cache_read_tokens += cache_read
+        workflow.cache_creation_tokens += cache_creation
+        # Prompt caching (Step 1): input_tokens is the uncached remainder billed at full
+        # rate; cache reads bill at ~0.1x the input rate and cache writes at ~1.25x. Folding
+        # them in keeps total_cost accurate as the server-side cache warms across turns.
         workflow.total_cost += (
-            usage.get("input_tokens", 0) * COST_PER_INPUT_TOKEN
-            + usage.get("output_tokens", 0) * COST_PER_OUTPUT_TOKEN
+            inp * COST_PER_INPUT_TOKEN
+            + cache_read * COST_PER_INPUT_TOKEN * 0.1
+            + cache_creation * COST_PER_INPUT_TOKEN * 1.25
+            + out * COST_PER_OUTPUT_TOKEN
         )
 
     async def _emit_timeline(self, workflow: WorkflowState, event: str) -> None:

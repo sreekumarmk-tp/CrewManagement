@@ -365,7 +365,15 @@ class ManagedAgentsClient:
         registry: "Any",
         on_event: Optional[EventCallback],
     ) -> Dict[str, Any]:
-        usage = {"input_tokens": 0, "output_tokens": 0}
+        usage = {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            # Prompt-cache fields from model_usage (Step 1). cache_read = tokens served
+            # from the server-side prompt cache (~0.1x cost); cache_creation = tokens
+            # written to it this turn (~1.25x). input_tokens is the uncached remainder.
+            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 0,
+        }
         text_parts: List[str] = []
 
         async def relay(etype: str, payload: Dict[str, Any]) -> None:
@@ -417,6 +425,12 @@ class ManagedAgentsClient:
                     if mu is not None:
                         usage["input_tokens"] += getattr(mu, "input_tokens", 0) or 0
                         usage["output_tokens"] += getattr(mu, "output_tokens", 0) or 0
+                        usage["cache_read_input_tokens"] += (
+                            getattr(mu, "cache_read_input_tokens", 0) or 0
+                        )
+                        usage["cache_creation_input_tokens"] += (
+                            getattr(mu, "cache_creation_input_tokens", 0) or 0
+                        )
 
                 elif etype == "session.status_terminated":
                     break

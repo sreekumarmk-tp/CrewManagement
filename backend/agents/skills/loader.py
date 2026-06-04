@@ -11,8 +11,9 @@ every specialist should load (glossary, error conventions, etc.).
 """
 from __future__ import annotations
 
+import functools
 from pathlib import Path
-from typing import Iterable, List
+from typing import Iterable, List, Tuple
 
 _SKILLS_ROOT = Path(__file__).resolve().parent
 _SHARED_DIR = _SKILLS_ROOT / "shared"
@@ -32,8 +33,18 @@ def _read_markdown_files(directory: Path, exclude: Iterable[str] = ()) -> List[s
     return chunks
 
 
+@functools.lru_cache(maxsize=None)
 def build_instructions(agent_name: str) -> str:
-    """Assemble system prompt + agent skills + shared skills into one string."""
+    """Assemble system prompt + agent skills + shared skills into one string.
+
+    Cached with lru_cache (keyed by agent_name): the role markdown is read and
+    concatenated from disk once per agent per process. A specialist like
+    CrewMatchingAgent is constructed on every workflow phase, so without this each
+    phase re-read system_prompt.md plus every skill/shared .md file. The files only
+    change when a developer edits them (the server restarts to pick them up), so
+    in-process staleness is not a concern; lru_cache does not cache the
+    FileNotFoundError raised for a missing folder. Reset with
+    build_instructions.cache_clear() in tests."""
     agent_dir = _SKILLS_ROOT / agent_name
     if not agent_dir.is_dir():
         raise FileNotFoundError(
@@ -59,20 +70,40 @@ def list_agents() -> List[str]:
     )
 
 
+@functools.lru_cache(maxsize=None)
+def _skill_file_stems(agent_name: str) -> Tuple[str, ...]:
+    """Cached disk scan backing list_skill_files. Returns an immutable tuple so the
+    shared cache entry can't be mutated by callers. Same staleness rules as
+    build_instructions; reset with _skill_file_stems.cache_clear() in tests."""
+    agent_dir = _SKILLS_ROOT / agent_name
+    if not agent_dir.is_dir():
+        return ()
+    return tuple(
+        p.stem
+        for p in sorted(agent_dir.glob("*.md"))
+        if p.name != "system_prompt.md"
+    )
+
+
 def list_skill_files(agent_name: str) -> List[str]:
     """Return markdown skill file basenames for an agent (no .md extension).
 
     Excludes system_prompt.md because that's the role definition, not a skill.
-    Used by the monitoring API to surface skills as UI tags.
+    Used by the monitoring API to surface skills as UI tags. Backed by a cached disk
+    scan (_skill_file_stems); returns a fresh list so callers may mutate it freely.
     """
-    agent_dir = _SKILLS_ROOT / agent_name
-    if not agent_dir.is_dir():
-        return []
-    return [
-        p.stem
-        for p in sorted(agent_dir.glob("*.md"))
-        if p.name != "system_prompt.md"
-    ]
+    return list(_skill_file_stems(agent_name))
+
+
+def cache_stats() -> dict:
+    """lru_cache hit/miss/size for the role/skill markdown readers (Step 2
+    observability): assembled instructions and per-agent skill-file lists."""
+    bi = build_instructions.cache_info()
+    sf = _skill_file_stems.cache_info()
+    return {
+        "agent_instructions": {"hits": bi.hits, "misses": bi.misses, "size": bi.currsize},
+        "skill_file_lists": {"hits": sf.hits, "misses": sf.misses, "size": sf.currsize},
+    }
 
 
 if __name__ == "__main__":

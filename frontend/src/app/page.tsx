@@ -5,12 +5,13 @@ import Link from "next/link";
 import toast, { Toaster } from "react-hot-toast";
 import {
   Ship, Users, Activity, BarChart3, Radio, Bell,
-  Wifi, WifiOff, Anchor, Navigation
+  Wifi, WifiOff, Anchor, Navigation, RefreshCw, Database
 } from "lucide-react";
 
 import { useWorkflowStore } from "@/store/workflowStore";
 import { useWebSocket } from "@/hooks/useWebSocket";
-import { crewApi, workflowApi } from "@/lib/api";
+import { useCrew } from "@/hooks/useCrew";
+import { workflowApi } from "@/lib/api";
 import SignOffTab from "@/components/dashboard/SignOffTab";
 import SignOnTab from "@/components/dashboard/SignOnTab";
 import SignOnOutcomeCard from "@/components/dashboard/SignOnOutcomeCard";
@@ -26,32 +27,30 @@ export default function DashboardPage() {
   } = useWorkflowStore();
 
   const { isConnected } = useWebSocket();
-  const [loading, setLoading] = useState(true);
   const [initiatingSignOff, setInitiatingSignOff] = useState<string | null>(null);
   const lastCrewRefreshKey = useRef<string>("");
 
+  // Step 4: SWR is the fetch/cache layer (dedup, stale-while-revalidate,
+  // revalidate-on-focus). We mirror its data into the Zustand store so the tabs
+  // and counts — which read the store — keep working unchanged.
+  const {
+    signOnCrew: swrSignOn, signOffCrew: swrSignOff,
+    isLoading: loading, isValidating: crewValidating, error: crewError, refresh,
+  } = useCrew();
+
   useEffect(() => {
-    loadCrew();
-  }, []);
+    setSignOnCrew(swrSignOn);
+    setSignOffCrew(swrSignOff);
+  }, [swrSignOn, swrSignOff, setSignOnCrew, setSignOffCrew]);
 
-  const loadCrew = async () => {
-    try {
-      const [sOn, sOff] = await Promise.all([
-        crewApi.getSignOnCrew(),
-        crewApi.getSignOffCrew(),
-      ]);
-      setSignOnCrew(sOn);
-      setSignOffCrew(sOff);
-    } catch (err) {
-      toast.error("Failed to load crew data");
-    } finally {
-      setLoading(false);
-    }
-  };
+  // Surface fetch failures (deduped by id so background revalidation can't spam).
+  useEffect(() => {
+    if (crewError) toast.error("Failed to load crew data", { id: "crew-load-error" });
+  }, [crewError]);
 
-  // Re-fetch crew when the workflow changes a crew member — e.g. a matched
+  // Re-validate crew when a workflow changes a crew member — e.g. a matched
   // candidate clears compliance and is signed on — so the Sign-Off / Sign-On
-  // tabs reflect it live without a manual reload.
+  // tabs reflect it live without a manual reload. SWR dedups + revalidates.
   useEffect(() => {
     const latest = events[0];
     if (!latest) return;
@@ -59,7 +58,7 @@ export default function DashboardPage() {
     const key = `${latest.event_type}:${latest.timestamp}`;
     if (triggers.includes(latest.event_type) && key !== lastCrewRefreshKey.current) {
       lastCrewRefreshKey.current = key;
-      loadCrew();
+      refresh();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [events]);
@@ -164,7 +163,8 @@ export default function DashboardPage() {
 
         {/* ── Left: Crew Panel (8 cols) ─────────────────────────────────────── */}
         <div className="col-span-12 xl:col-span-8 space-y-4">
-          {/* Tab switcher */}
+          {/* Tab switcher + SWR cache state (Step 4) */}
+          <div className="flex items-center justify-between gap-3">
           <div className="glass rounded-2xl p-1 flex gap-1 w-fit">
             {(["sign-off", "sign-on"] as const).map((tab) => (
               <button
@@ -189,6 +189,8 @@ export default function DashboardPage() {
                 )}
               </button>
             ))}
+          </div>
+            <CrewCacheBadge validating={crewValidating} />
           </div>
 
           <AnimatePresence mode="wait">
@@ -238,6 +240,27 @@ export default function DashboardPage() {
           {activeWorkflow && <WorkflowTimeline workflow={activeWorkflow} />}
         </div>
       </div>
+    </div>
+  );
+}
+
+// Step 4 indicator: shows the SWR client-cache state for the crew lists — a teal
+// "Cached" dot normally, switching to a spinning "Revalidating…" while SWR fetches
+// fresh data in the background (stale-while-revalidate).
+function CrewCacheBadge({ validating }: { validating: boolean }) {
+  return (
+    <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full glass border border-ocean-border/40 text-xs shrink-0">
+      {validating ? (
+        <>
+          <RefreshCw className="w-3 h-3 text-amber-400 animate-spin" />
+          <span className="text-amber-300">Revalidating…</span>
+        </>
+      ) : (
+        <>
+          <Database className="w-3 h-3 text-teal-400" />
+          <span className="text-teal-300">Cached · SWR</span>
+        </>
+      )}
     </div>
   );
 }

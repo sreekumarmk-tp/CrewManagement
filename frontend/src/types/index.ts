@@ -220,9 +220,41 @@ export interface SystemMetrics {
   success_rate: number;
   total_tokens: number;
   total_cost: number;
+  // Prompt-cache observability (Step 1). Managed Agents caches the static prompt
+  // prefix server-side; cache_hit_rate is reads / (reads + writes) over the
+  // cacheable prefix, so it rises as the cache warms across turns.
+  cache_read_tokens: number;
+  cache_creation_tokens: number;
+  cache_hit_rate: number;
   avg_workflow_duration_ms: number;
   active_websocket_connections: number;
   agent_metrics: Record<string, AgentMetrics>;
+  // Backend cache observability (Steps 2 & 3). Optional so older backends don't break.
+  backend_cache?: BackendCacheMetrics;
+}
+
+export interface CacheCounter {
+  hits: number;
+  misses: number;
+  size?: number;
+}
+
+export interface BackendCacheMetrics {
+  // Step 2 — in-process lru_cache (skills.json + role/skill markdown).
+  lru: {
+    hits: number;
+    misses: number;
+    hit_rate: number;
+    by_cache: Record<string, CacheCounter>;
+  };
+  // Step 3 — Redis cache-aside for crew-list queries.
+  redis_crew: {
+    hits: number;
+    misses: number;
+    errors: number;
+    hit_rate: number;
+    available: boolean;
+  };
 }
 
 export interface AgentMetrics {

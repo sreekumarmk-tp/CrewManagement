@@ -4,7 +4,7 @@ import Link from "next/link";
 import { motion } from "framer-motion";
 import {
   Anchor, ArrowLeft, RefreshCw, TrendingUp, Clock,
-  DollarSign, Target, Zap, Users, CheckCircle, Activity, WifiOff
+  DollarSign, Target, Zap, Users, CheckCircle, Activity, WifiOff, Database
 } from "lucide-react";
 import {
   AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell,
@@ -132,7 +132,7 @@ export default function MonitoringPage() {
         ) : offline ? null : (
           <>
             {/* ── KPI Cards ──────────────────────────────────────────────────── */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
               <KPICard
                 icon={<Activity className="w-5 h-5" />}
                 label="Total Workflows"
@@ -153,6 +153,13 @@ export default function MonitoringPage() {
                 value={(metrics?.total_tokens || 0).toLocaleString()}
                 sub={`$${(metrics?.total_cost || 0).toFixed(4)} spent`}
                 color="text-purple-400"
+              />
+              <KPICard
+                icon={<Database className="w-5 h-5" />}
+                label="Cache Hit Rate"
+                value={`${metrics?.cache_hit_rate ?? 0}%`}
+                sub={`${(metrics?.cache_read_tokens || 0).toLocaleString()} tokens from cache`}
+                color="text-teal-400"
               />
               <KPICard
                 icon={<Clock className="w-5 h-5" />}
@@ -319,6 +326,47 @@ export default function MonitoringPage() {
                       </div>
                     </motion.div>
                   ))}
+                </div>
+              </div>
+            )}
+
+            {/* ── Backend Cache (Steps 2 & 3) ───────────────────────────────── */}
+            {metrics?.backend_cache && (
+              <div className="glass rounded-2xl p-6">
+                <h3 className="text-sm font-semibold text-white mb-4 flex items-center gap-2">
+                  <Database className="w-4 h-4 text-teal-400" /> Backend Cache
+                </h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  {/* Step 2 — in-process lru_cache */}
+                  <div className="rounded-xl bg-ocean/40 border border-ocean-border/40 p-4">
+                    <div className="flex items-center justify-between mb-3">
+                      <span className="text-xs font-semibold text-gray-300">In-Process · lru_cache</span>
+                      <span className="text-lg font-bold text-teal-400">{metrics.backend_cache.lru.hit_rate}%</span>
+                    </div>
+                    <div className="space-y-1">
+                      <MetricRow label="Hits" value={metrics.backend_cache.lru.hits.toLocaleString()} />
+                      <MetricRow label="Misses" value={metrics.backend_cache.lru.misses.toLocaleString()} />
+                      {Object.entries(metrics.backend_cache.lru.by_cache).map(([k, c]) => (
+                        <MetricRow key={k} label={k} value={`${c.hits} / ${c.hits + c.misses}`} />
+                      ))}
+                    </div>
+                  </div>
+                  {/* Step 3 — Redis crew cache */}
+                  <div className="rounded-xl bg-ocean/40 border border-ocean-border/40 p-4">
+                    <div className="flex items-center justify-between mb-3">
+                      <span className="text-xs font-semibold text-gray-300">Redis Crew Cache</span>
+                      <span className="text-lg font-bold text-teal-400">{metrics.backend_cache.redis_crew.hit_rate}%</span>
+                    </div>
+                    <div className="space-y-1">
+                      <MetricRow label="Hits" value={metrics.backend_cache.redis_crew.hits.toLocaleString()} />
+                      <MetricRow label="Misses" value={metrics.backend_cache.redis_crew.misses.toLocaleString()} />
+                      <MetricRow label="Errors (→ DB fallback)" value={metrics.backend_cache.redis_crew.errors.toLocaleString()} />
+                      <MetricRow
+                        label="Status"
+                        value={metrics.backend_cache.redis_crew.available ? "available" : "disabled"}
+                      />
+                    </div>
+                  </div>
                 </div>
               </div>
             )}

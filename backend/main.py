@@ -15,6 +15,7 @@ from api.routes.monitoring import router as monitoring_router
 from api.websockets.workflow_ws import manager
 from config import settings
 from database.db import init_db
+from services.cache_service import cache_service
 
 log = structlog.get_logger()
 
@@ -27,6 +28,7 @@ async def lifespan(app: FastAPI):
     except Exception as exc:  # noqa: BLE001 - log and continue so the app still boots
         log.error("db_init_failed", error=str(exc))
     yield
+    await cache_service.close()
     log.info("shutdown", app=settings.app_name)
 
 

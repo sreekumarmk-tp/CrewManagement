@@ -10,11 +10,35 @@ from agents.managed.registry import (
     attached_custom_skill_labels,
     coordinator_agent_config,
     custom_skill_id_to_name,
+    skills_cache_info,
     specialist_agent_configs,
 )
 from agents.skills import list_skill_files
+from agents.skills.loader import cache_stats as skills_md_cache_stats
+from services.cache_service import cache_service
 
 router = APIRouter(prefix="/monitoring", tags=["monitoring"])
+
+
+def _backend_cache_section() -> Dict[str, Any]:
+    """Backend cache observability for the monitoring dashboard.
+
+    `lru` = Step 2 in-process file caches (skills.json + role/skill markdown);
+    `redis_crew` = Step 3 Redis cache-aside for the crew-list queries.
+    """
+    lru_caches = {"skills_json": skills_cache_info(), **skills_md_cache_stats()}
+    hits = sum(c["hits"] for c in lru_caches.values())
+    misses = sum(c["misses"] for c in lru_caches.values())
+    total = hits + misses
+    return {
+        "lru": {
+            "hits": hits,
+            "misses": misses,
+            "hit_rate": round(hits / total * 100, 1) if total else 0.0,
+            "by_cache": lru_caches,
+        },
+        "redis_crew": cache_service.stats(),
+    }
 
 
 def _tool_labels(tools) -> list:
@@ -44,19 +68,25 @@ async def get_agent_skills():
     pdf/docx/xlsx or custom). Single-sourced from registry.py.
     """
     id_to_name = custom_skill_id_to_name()
-    agents = []
-    for cfg in specialist_agent_configs():
-        # create()-time skills (SKILLS_BY_KEY / custom refs) + skills attached in place
-        # via scripts.attach_skills (SPECIALIST_SKILLS). Dedupe, preserve order.
-        skills = _skill_labels(cfg.get("skills"), id_to_name) + attached_custom_skill_labels(cfg["key"])
-        agents.append(
-            {
-                "key": cfg["key"],
-                "name": cfg["name"],
-                "tools": _tool_labels(cfg.get("tools")),
-                "skills": list(dict.fromkeys(skills)),
-            }
-        )
+    agents = [
+        {
+            "key": cfg["key"],
+            "name": cfg["name"],
+            "tools": _tool_labels(cfg.get("tools")),
+            # Skills shown as UI tags, deduped (insertion order preserved), unioned
+            # from three sources:
+            #   - create()-time skills: SKILLS_BY_KEY prebuilt (pdf/docx/xlsx) + custom refs,
+            #   - custom Agent Skills attached in place via scripts.attach_skills
+            #     (SPECIALIST_SKILLS, e.g. the travel policy docs),
+            #   - local markdown role-skill files under agents/skills/<key>/.
+            "skills": list(dict.fromkeys(
+                _skill_labels(cfg.get("skills"), id_to_name)
+                + attached_custom_skill_labels(cfg["key"])
+                + list_skill_files(cfg["key"])
+            )),
+        }
+        for cfg in specialist_agent_configs()
+    ]
     coordinator = coordinator_agent_config([])  # roster irrelevant — we only read its tools
     agents.append(
         {
@@ -74,6 +104,7 @@ async def get_metrics() -> Dict[str, Any]:
     """Return aggregated system metrics across all workflows."""
     metrics = state_service.get_metrics()
     metrics["active_websocket_connections"] = manager.total_connections
+    metrics["backend_cache"] = _backend_cache_section()
     return metrics
 
 
@@ -88,6 +119,8 @@ async def get_active_workflows():
             "created_at": w.created_at.isoformat(),
             "total_tokens": w.total_tokens,
             "total_cost": round(w.total_cost, 6),
+            "cache_read_tokens": w.cache_read_tokens,
+            "cache_creation_tokens": w.cache_creation_tokens,
             "agent_count": len(w.agent_executions),
         }
         for w in workflows
