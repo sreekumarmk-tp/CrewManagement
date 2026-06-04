@@ -15,9 +15,10 @@ Two responsibilities:
    hosted coordinator/sub-agents emit. Tool names are globally unique across the
    four specialists, so a single name→agent map is sufficient to route a call.
 """
+import functools
 import json
 import os
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import structlog
 
@@ -105,6 +106,29 @@ _CUSTOM_SKILLS_BY_AGENT: Dict[str, List[str]] = {
 _SKILLS_CACHE = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", "skills.json"))
 
 
+@functools.lru_cache(maxsize=1)
+def _load_skills_cache() -> Dict[str, Any]:
+    """Parsed contents of skills.json, read from disk once per process.
+
+    Decorated with lru_cache so the file is opened and parsed a single time; subsequent
+    calls return the cached dict with no disk I/O. skills.json only changes during the
+    offline upload step (scripts.upload_skills), after which the process restarts, so
+    in-process staleness is not a concern. lru_cache does NOT cache exceptions, so if the
+    file is missing on an early call it is simply retried on the next one until it exists.
+
+    The returned dict is the shared cached object — callers must treat it as read-only.
+    Tests that swap skills.json can reset the cache with ``_load_skills_cache.cache_clear()``.
+    """
+    with open(_SKILLS_CACHE) as f:
+        return json.load(f)
+
+
+def skills_cache_info() -> Dict[str, int]:
+    """lru_cache hit/miss/size for the skills.json reader (Step 2 observability)."""
+    ci = _load_skills_cache.cache_info()
+    return {"hits": ci.hits, "misses": ci.misses, "size": ci.currsize}
+
+
 def _custom_skill_refs(agent_key: str) -> List[Dict[str, str]]:
     """Resolve an agent's custom-skill logical names to {type:custom, skill_id, version}
     refs using the uploaded-skill ids in skills.json. Missing/un-uploaded skills are
@@ -113,8 +137,7 @@ def _custom_skill_refs(agent_key: str) -> List[Dict[str, str]]:
     if not logical:
         return []
     try:
-        with open(_SKILLS_CACHE) as f:
-            cache = json.load(f)
+        cache = _load_skills_cache()
     except Exception:
         return []
     refs: List[Dict[str, str]] = []
@@ -137,11 +160,93 @@ def custom_skill_id_to_name() -> Dict[str, str]:
     """Reverse map of uploaded custom skill ids -> their local logical name, so the
     UI can show a readable label (e.g. 'maritime_comms') instead of 'skill_01V8…'."""
     try:
-        with open(_SKILLS_CACHE) as f:
-            cache = json.load(f)
+        cache = _load_skills_cache()
     except Exception:
         return {}
     return {v.get("skill_id"): k for k, v in cache.items() if v.get("skill_id")}
+
+
+# ── Attachable custom skills (in-place attach via scripts.attach_skills) ────────
+# Distinct from the create()-time wiring above (SKILLS_BY_KEY / _CUSTOM_SKILLS_BY_AGENT,
+# applied by scripts.update_agent_skills). These are custom Agent Skills authored under
+# backend/agents/skills/<folder>/SKILL.md and attached to an ALREADY-CREATED specialist in
+# place by scripts.attach_skills — it uploads each via ManagedAgentsClient.upload_skill and
+# patches the agent with agents.update. The folder name MUST equal the `name:` field in that
+# folder's SKILL.md.
+#
+# NOTE: scripts.attach_skills REPLACES an agent's skill list with exactly these. Running
+# scripts.update_agent_skills afterwards rebuilds the agent from SKILLS_BY_KEY /
+# _CUSTOM_SKILLS_BY_AGENT and would drop anything attached here — keep the two paths in
+# sync (or pick one) if you use both.
+_AGENT_SKILLS_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "skills"))
+
+# specialist key -> subfolder under backend/agents/skills/ that groups its skill folders.
+# A specialist's skill folders live under <_AGENT_SKILLS_DIR>/<subdir>/<folder>/SKILL.md.
+# Keys absent here default to "" (skill folders sit directly under _AGENT_SKILLS_DIR).
+_SPECIALIST_SKILLS_SUBDIR: Dict[str, str] = {
+    "travel": "travel_agent",
+}
+
+# specialist key -> [(skill folder under its skills subdir, human display title)]
+SPECIALIST_SKILLS: Dict[str, List[Tuple[str, str]]] = {
+    "travel": [
+        ("crew-travel-policy", "Crew Travel Booking Policy"),
+        ("visa-and-transit-requirements", "Visa & Transit Requirements"),
+        ("port-clearance-procedures", "Port Clearance Procedures"),
+        ("repatriation-rules", "Seafarer Repatriation Rules (MLC 2006)"),
+    ],
+}
+
+
+def specialist_skill_specs(key: str) -> List[Dict[str, str]]:
+    """Resolve a specialist's declared attachable skills to upload specs:
+    ``[{"dir": <abs skill folder>, "display_title": <title>}, ...]``.
+    Returns ``[]`` for a key that declares no skills."""
+    subdir = _SPECIALIST_SKILLS_SUBDIR.get(key, "")
+    base = os.path.join(_AGENT_SKILLS_DIR, subdir) if subdir else _AGENT_SKILLS_DIR
+    return [
+        {"dir": os.path.join(base, folder), "display_title": title}
+        for folder, title in SPECIALIST_SKILLS.get(key, [])
+    ]
+
+
+def specialist_config_with_skills(key: str, skills: List[Dict[str, str]]) -> Dict[str, Any]:
+    """Full agents.update payload for an existing specialist, carrying `skills`.
+
+    Re-asserts the specialist's name/model/system/tools (rebuilt from its class, the
+    same source setup() used) alongside the given skill refs, so an in-place attach
+    can't drop the prompt or tools regardless of the update endpoint's merge semantics.
+    The agent toolset is included whenever skills are present — skills need `read`/`bash`
+    to open their SKILL.md files, so agents.update rejects a skill-bearing agent without it.
+    """
+    inst: BaseAgent = SPECIALIST_CLASSES[key]()
+    tools: List[Dict[str, Any]] = list(inst.custom_tool_defs())
+    if skills:
+        tools.insert(0, {"type": "agent_toolset_20260401"})
+    return {
+        "name": inst.name,
+        "model": settings.claude_model,
+        "system": inst.system_prompt(),
+        "tools": tools,
+        "skills": skills,
+    }
+
+
+def attached_custom_skill_labels(key: str) -> List[str]:
+    """Friendly labels (the skill folder name == SKILL.md `name:`) for the custom skills
+    attached IN PLACE to a specialist via scripts.attach_skills. These live in
+    SPECIALIST_SKILLS rather than the create()-time `skills` config, so the monitoring API
+    merges them in to reflect what is actually on the agent. Returns labels only when
+    managed_agents.json records skill_ids for the specialist (i.e. attach has run)."""
+    declared = [folder for folder, _title in SPECIALIST_SKILLS.get(key, [])]
+    if not declared:
+        return []
+    try:
+        with open(settings.managed_agents_ids_file) as f:
+            attached = json.load(f).get("specialists", {}).get(key, {}).get("skill_ids") or []
+    except Exception:
+        attached = []
+    return declared if attached else []
 
 
 def specialist_agent_configs() -> List[Dict[str, Any]]:

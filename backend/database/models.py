@@ -140,6 +140,13 @@ class WorkflowState(BaseModel):
     total_tokens: int = 0
     total_cost: float = 0.0
     total_duration_ms: int = 0
+    # Prompt-cache observability (Step 1). Managed Agents caches the static prompt
+    # prefix (coordinator/specialist system prompts + accrued session context)
+    # server-side; these accrue how much of each turn's input was served from cache
+    # vs. written fresh. total_tokens stays input+output (the uncached remainder +
+    # output) — cache tokens are tracked separately so the hit rate stays meaningful.
+    cache_read_tokens: int = 0
+    cache_creation_tokens: int = 0
 
 
 # ─── Request / Response Models ────────────────────────────────────────────────

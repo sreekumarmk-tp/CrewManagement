@@ -34,6 +34,15 @@ class Settings(BaseSettings):
 
     # Redis
     redis_url: str = os.getenv("REDIS_URL", "redis://localhost:6379")
+    # Step 3: TTL (seconds) for the crew-list cache-aside entries. The crew pool
+    # changes infrequently and update_crew() invalidates on every mutation, so a
+    # 30-minute fallback expiry is a safe upper bound on staleness.
+    crew_cache_ttl_seconds: int = int(os.getenv("CREW_CACHE_TTL_SECONDS", "1800"))
+    # Step 4: browser HTTP cache window for the GET crew-list endpoints. Kept short
+    # (the browser cache can't be invalidated server-side) so the dashboard's live
+    # event-driven refresh isn't served a stale response for long. Layers under the
+    # SWR client cache and the Redis cache-aside above.
+    crew_http_cache_max_age_seconds: int = int(os.getenv("CREW_HTTP_CACHE_MAX_AGE", "60"))
 
     # Context graph backend: "fallback" (build the compliance subgraph in Python,
     # no extra infra — the default) or "age" (use the Apache AGE graph that lives
