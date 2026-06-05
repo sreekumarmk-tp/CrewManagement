@@ -40,17 +40,19 @@ def test_demo_inject_flows_through_whole_pipe(tmp_path):
     r = client.post("/demo/inject")
     assert r.status_code == 200
     body = r.json()
-    assert body["injected"] == 2                      # one slack + one email
+    assert body["injected"] == 3                      # one slack + one email + one erp
     sources = {t["source"] for t in body["trace"]}
-    assert sources == {"slack", "email"}
+    assert sources == {"slack", "email", "erp"}
 
     # each trace item carries raw (ingress) → normalized → L2 record
     for item in body["trace"]:
-        assert item["raw"] and item["normalized"]["source_system"] in {"SLACK", "EMAIL"}
-        assert item["l2"]["kind"] in {"edge", "signoff_event"}
+        assert item["raw"] and item["normalized"]["source_system"] in {"SLACK", "EMAIL", "CREW_DB"}
+        assert item["l2"]["kind"] in {"edge", "signoff_event", "node"}
     # the email is a sign-off → SignOffEvent node in L2
     assert any(t["l2"]["kind"] == "signoff_event" for t in body["trace"])
-    assert body["l2_store"]["total"] == 2 and body["l2_store"]["signoff"] == 1
+    # the ERP crew row projects to an L2 node
+    assert any(t["source"] == "erp" and t["l2"]["kind"] == "node" for t in body["trace"])
+    assert body["l2_store"]["total"] == 3 and body["l2_store"]["signoff"] == 1
 
 
 def test_healthz_reports_l2_and_stages(tmp_path):
@@ -62,10 +64,10 @@ def test_healthz_reports_l2_and_stages(tmp_path):
     client.post("/demo/inject")
     h = client.get("/healthz").json()
     assert h["status"] == "ok"
-    assert h["l2_records"] == 2
+    assert h["l2_records"] == 3
 
     st = client.get("/demo/status").json()
     t = st["totals"]
     # the four pipe stages all advanced: ingress -> normalized -> bus -> l2
-    assert t["ingress"] >= 2 and t["normalized"] == 2 and t["bus"] == 2 and t["l2"] == 2
+    assert t["ingress"] >= 3 and t["normalized"] == 3 and t["bus"] == 3 and t["l2"] == 3
     assert t["signoff"] == 1

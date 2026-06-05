@@ -29,8 +29,15 @@ This is the **ingress / connector foundation**:
   Vessel-Port DB)
 - `api/` — FastAPI app exposing **`/healthz`** and **`POST /slack/events`**
 
-Not in this scaffold (core track / later days): the real InMemoryBus & Redis
-Streams, the L2 sink + OrgMap upsert, SSE `/stream`, the Gmail connector (Day 3).
+The real **InMemoryBus** (dedup + subscriber fan-out + replay) now lives in
+[`core/bus.py`](core/bus.py) and the L2 sink subscribes to it via
+`create_app(bus=InMemoryBus())`. Still deferred (later days): the
+**RedisStreamsBus** (Day 4, same Protocol — `docker-compose` ships the `redis`
+seam) and the **Gmail** connector (Day 3).
+
+See [`docs/COMPONENTS.md`](docs/COMPONENTS.md) for the six-component status map
+and diagrams (SignalEvent · InMemoryBus · L2Sink · SSE `/stream` ·
+mock-event generator · docker-compose).
 
 ## Quick start
 
@@ -38,9 +45,15 @@ Streams, the L2 sink + OrgMap upsert, SSE `/stream`, the Gmail connector (Day 3)
 # uses Python 3.11+
 python -m pip install -r requirements.txt
 
-make test        # 18 tests: contract, signal, API, signature, ERP watermark
+make test        # contract, signal, API, signature, ERP watermark, InMemoryBus
 make smoke       # in-process Day-1 ingress demo (no external services)
 make run         # uvicorn on :8001
+```
+
+Or run the whole stack in containers (service + the Redis seam):
+
+```bash
+docker compose up --build       # → dashboard at http://localhost:8001/
 ```
 
 Then:
@@ -115,7 +128,9 @@ L1SignalFabric/
   data/                 # generated dataset (reproducible via `make seed`)
   scripts/smoke.py      # Day-1 ingress smoke
   tests/                # pytest suite
-  docs/                 # PLAN / DESIGN / TEST (+ .docx, diagrams)
+  docs/                 # PLAN / DESIGN / TEST / COMPONENTS (+ .docx, diagrams)
+  Dockerfile            # service image
+  docker-compose.yml    # signalfabric + redis (Day-4 RedisStreamsBus seam)
 ```
 
 ## The seam (how the two tracks meet)

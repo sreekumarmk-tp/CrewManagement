@@ -78,8 +78,14 @@ class DemoStreamer:
         if hasattr(self.bus, "note_ingress"):
             self.bus.note_ingress(source, n)
 
-    async def _emit(self, events: list[SignalEvent]) -> int:
+    async def _emit(self, events: list[SignalEvent],
+                    raw: Optional[dict[str, Any]] = None) -> int:
         for ev in events:
+            if raw is not None:
+                # Demo provenance: stash the raw ingress payload so the live-tail
+                # UI can show raw → normalized → L2 per row. Namespaced + ignored
+                # by the L2 projector and dedup; stripped from the normalized view.
+                ev.metadata["_ingress_raw"] = raw
             await self.bus.publish(ev)
             self.by_source[ev.source_system.value] += 1
             self.by_entity[ev.entity] += 1
@@ -115,10 +121,10 @@ class DemoStreamer:
         # Slack + Email inline
         for ln in slack_lines:
             self._note_ingress("slack")
-            total += await self._emit(await self.slack.ingest(ln["raw"]))
+            total += await self._emit(await self.slack.ingest(ln["raw"]), raw=ln["raw"])
         for ln in email_lines:
             self._note_ingress("email")
-            total += await self._emit(email_to_signal(ln["raw"], self.tenant_id))
+            total += await self._emit(email_to_signal(ln["raw"], self.tenant_id), raw=ln["raw"])
 
         # Idempotency second pass over the dedup-capable connectors:
         #   ERP poll → 0 (watermark advanced) · Slack ingest → 0 (event_id seen)
@@ -150,7 +156,7 @@ class DemoStreamer:
             while idx < len(future) and \
                     datetime.fromisoformat(future[idx]["occurred_at"]) <= virtual_now:
                 self._note_ingress(future[idx]["source"])
-                applied += await self._emit(await self._route(future[idx]))
+                applied += await self._emit(await self._route(future[idx]), raw=future[idx]["raw"])
                 idx += 1
             if on_tick:
                 on_tick(virtual_now, idx, len(future), self.by_source)

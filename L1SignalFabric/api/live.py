@@ -27,6 +27,7 @@ from typing import Any, Callable, Optional
 from fastapi import APIRouter, Request
 from fastapi.responses import FileResponse, StreamingResponse
 
+from core.bus import InMemoryBus
 from core.signal import SignalEvent
 from demo.email_normalize import email_to_signal
 
@@ -43,7 +44,13 @@ class BroadcastBus:
     def __init__(self, keep_last: int = 200, queue_max: int = 5000) -> None:
         self._subs: set[asyncio.Queue] = set()
         self._sink: Optional[L2Sink] = None
+        # A real InMemoryBus tapped on every publish purely to surface its
+        # per-ingress console log (PUBLISH / DUP-DROP) in the UI. It has no
+        # subscribers here — the L2 sink stays wired via set_sink — so it adds
+        # the bus's idempotency view alongside the viewer stream.
+        self.inmem = InMemoryBus()
         self.recent: deque[dict] = deque(maxlen=keep_last)
+        self.recent_buslog: deque[dict] = deque(maxlen=keep_last)
         # stage counters
         self.ingress = 0                 # raw events received (ingress stage)
         self.ingress_by_source: Counter = Counter()
@@ -80,12 +87,22 @@ class BroadcastBus:
 
         payload = self._payload(event, l2rec, is_signoff)
         self.recent.append(payload)
+        self._fanout(payload)
+
+        # tap the InMemoryBus so its per-ingress console log is visible in the UI
+        await self.inmem.publish(event)
+        if self.inmem.last_log_line is not None:
+            logline = {"type": "buslog", **self.inmem.last_log_line}
+            self.recent_buslog.append(self.inmem.last_log_line)
+            self._fanout(logline)
+        return l2rec
+
+    def _fanout(self, payload: dict) -> None:
         for q in list(self._subs):
             try:
                 q.put_nowait(payload)
             except asyncio.QueueFull:
                 pass  # slow client: drop the line; totals stay authoritative
-        return l2rec
 
     @property
     def count(self) -> int:
@@ -114,7 +131,9 @@ class BroadcastBus:
 
     def snapshot(self) -> dict[str, Any]:
         return {"type": "snapshot", "totals": self.totals(),
-                "recent": list(self.recent)[-60:]}
+                "recent": list(self.recent)[-60:],
+                "buslog": list(self.recent_buslog)[-80:],
+                "bus_stats": self.inmem.stats()}
 
     @staticmethod
     def _summary(ev: SignalEvent) -> str:
@@ -131,6 +150,14 @@ class BroadcastBus:
         return f"{op} {ev.entity} {ev.key}".strip()
 
     def _payload(self, ev: SignalEvent, l2rec: Optional[dict], is_signoff: bool) -> dict[str, Any]:
+        # Full three-stage trace per row, for the live-tail detail drawer:
+        #   raw (ingress)  → normalized (SignalEvent)  → l2_record
+        # The raw is demo provenance carried in metadata._ingress_raw; pop it out
+        # so the normalized view stays the clean canonical event.
+        normalized = ev.model_dump(mode="json")
+        raw = None
+        if isinstance(normalized.get("metadata"), dict):
+            raw = normalized["metadata"].pop("_ingress_raw", None)
         return {
             "type": "signal",
             "source": ev.source_system.value,
@@ -139,6 +166,9 @@ class BroadcastBus:
             "summary": self._summary(ev),
             "signoff": is_signoff,
             "l2": {"kind": l2rec.get("kind"), "label": l2rec.get("label")} if l2rec else None,
+            "raw": raw,
+            "normalized": normalized,
+            "l2_record": l2rec,
             "ts": ev.timestamp.isoformat(),
             "totals": self.totals(),
         }
@@ -150,6 +180,19 @@ router = APIRouter(tags=["live"])
 @router.get("/")
 async def dashboard() -> FileResponse:
     return FileResponse(_STATIC / "dashboard.html")
+
+
+@router.get("/bus/log")
+async def bus_log(request: Request, n: int = 200) -> dict:
+    """Recent InMemoryBus console log (one line per ingress) + bus stats.
+
+    The live tail streams these lines over SSE as `type:"buslog"` events; this
+    endpoint backfills them for a fresh load / non-SSE clients."""
+    bus = request.app.state.bus
+    inmem = getattr(bus, "inmem", None)
+    if inmem is None:
+        return {"lines": [], "stats": None}
+    return {"lines": inmem.recent_log(n), "stats": inmem.stats()}
 
 
 @router.get("/stream")
@@ -188,8 +231,11 @@ def _load_entities(data_dir: str) -> dict:
 
 
 def _mock_pair(ents: dict, seq: int) -> dict:
-    """Build ONE mock Slack message + ONE mock sign-off email from the generated
-    entities (falls back to literals if no dataset is present)."""
+    """Build ONE mock Slack message + ONE mock sign-off email + ONE ERP crew-DB
+    change row from the generated entities (falls back to literals if no dataset
+    is present). All three describe the *same* crew change so Demo 1 tells one
+    story across Slack (tribal knowledge), Email (sign-off), and ERP (system of
+    record)."""
     rnd = random.Random(seq)
     crew = list(ents.get("crew", {}).values()) or [
         {"name": "Arjun Sharma", "rank": "2nd Officer", "vessel": "MV Orion Star",
@@ -217,7 +263,21 @@ def _mock_pair(ents: dict, seq: int) -> dict:
         "sent_at": datetime.now(timezone.utc).isoformat(),
         "labels": ["crew/sign-off"],
     }
-    return {"slack": slack, "email": email,
+    erp = {
+        "table": "crew",
+        "op": "update",
+        "occurred_at": datetime.now(timezone.utc).isoformat(),
+        "seq": 900000 + seq,   # high range so it never collides with dataset seqs
+        "data": {
+            "crew_id": c.get("crew_id", "CR-0001"),
+            "name": name,
+            "rank": rank,
+            "vessel": vessel,
+            "status": "Signing Off",
+            "relief_port": port,
+        },
+    }
+    return {"slack": slack, "email": email, "erp": erp,
             "ctx": {"crew": name, "rank": rank, "vessel": vessel, "port": port}}
 
 
@@ -238,6 +298,7 @@ async def demo_inject(request: Request, data: str = "./data") -> dict:
     if hasattr(bus, "note_ingress"):
         bus.note_ingress("slack")
     for ev in await slack.ingest(mock["slack"]):
+        ev.metadata["_ingress_raw"] = mock["slack"]   # provenance for the live-tail drawer
         l2 = await bus.publish(ev)
         trace.append({"source": "slack", "raw": mock["slack"],
                       "normalized": ev.model_dump(mode="json"), "l2": l2})
@@ -246,8 +307,18 @@ async def demo_inject(request: Request, data: str = "./data") -> dict:
     if hasattr(bus, "note_ingress"):
         bus.note_ingress("email")
     for ev in email_to_signal(mock["email"], tenant):
+        ev.metadata["_ingress_raw"] = mock["email"]   # provenance for the live-tail drawer
         l2 = await bus.publish(ev)
         trace.append({"source": "email", "raw": mock["email"],
+                      "normalized": ev.model_dump(mode="json"), "l2": l2})
+
+    # --- ERP: one Crew-DB outbox change row → connector(normalize) → bus → L2 node ---
+    if hasattr(bus, "note_ingress"):
+        bus.note_ingress("erp")
+    for ev in await state.erp.ingest(mock["erp"]):
+        ev.metadata["_ingress_raw"] = mock["erp"]
+        l2 = await bus.publish(ev)
+        trace.append({"source": "erp", "raw": mock["erp"],
                       "normalized": ev.model_dump(mode="json"), "l2": l2})
 
     return {

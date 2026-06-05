@@ -16,7 +16,7 @@ from config import SERVICE_NAME, SERVICE_VERSION, Settings
 from config import settings as default_settings
 from connectors.erp import ErpConnector, InMemoryOutboxAdapter
 from connectors.slack import SlackConnector
-from core.bus import EventBus
+from core.bus import EventBus, InMemoryBus
 from l2 import L2JsonlStore
 
 from . import live
@@ -40,12 +40,19 @@ def create_app(
     app.state.bus = bus_obj
 
     # --- L2 store + sink: project every published event into the L2 JSONL store
-    #     (the downstream end of the demo pipe). Only when the bus supports a sink. ---
+    #     (the downstream end of the demo pipe). Wiring differs per bus:
+    #       * BroadcastBus (SSE viewer, default) — single sink via set_sink()
+    #       * InMemoryBus (core transport)       — subscribe() the sink (fan-out)
+    #     Either way "no change to any connector or route" (README seam). ---
     app.state.l2_store = None
     if isinstance(bus_obj, live.BroadcastBus):
         store = L2JsonlStore(cfg.l2_store_path)
         app.state.l2_store = store
         bus_obj.set_sink(store.append)
+    elif isinstance(bus_obj, InMemoryBus):
+        store = L2JsonlStore(cfg.l2_store_path)
+        app.state.l2_store = store
+        bus_obj.subscribe(store.append)
 
     # --- connectors ---
     app.state.slack = SlackConnector(

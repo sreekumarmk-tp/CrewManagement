@@ -4,7 +4,7 @@ Connectors (ingress track) and the bus/sink (core track) both build against
 these types. Keep this layer dependency-light and wire-compatible with Conduit.
 """
 
-from .bus import EventBus, LoggingEventBus
+from .bus import EventBus, InMemoryBus, LoggingEventBus
 from .connector import (
     Checkpoint,
     EventStreamConnector,
@@ -37,6 +37,7 @@ __all__ = [
     # bus
     "EventBus",
     "LoggingEventBus",
+    "InMemoryBus",
     # dedup
     "dedup_key",
     # watermark

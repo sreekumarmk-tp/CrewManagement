@@ -26,13 +26,31 @@ def test_broadcastbus_fans_out_and_counts():
         q = bus.subscribe()
         await bus.publish(_event())
         await bus.publish(_event(signoff=True))
-        item1 = await asyncio.wait_for(q.get(), 1)
-        item2 = await asyncio.wait_for(q.get(), 1)
-        assert item1["source"] == "SLACK" and item1["summary"] == "hello"
-        assert item2["signoff"] is True
+        # /stream multiplexes two payload kinds: "signal" rows and "buslog" lines
+        # (the InMemoryBus console tap). Partition the drained queue by type.
+        drained = []
+        for _ in range(8):
+            try:
+                drained.append(await asyncio.wait_for(q.get(), 0.5))
+            except asyncio.TimeoutError:
+                break
+        signals = [d for d in drained if d.get("type") == "signal"]
+        buslog = [d for d in drained if d.get("type") == "buslog"]
+        assert signals[0]["source"] == "SLACK" and signals[0]["summary"] == "hello"
+        assert signals[1]["signoff"] is True
         assert bus.total == 2 and bus.signoff == 1
         assert bus.totals()["by_source"]["SLACK"] == 2
+        # the InMemoryBus tap produced console lines for each ingress
+        assert buslog and any("PUBLISH" in b["line"] for b in buslog)
     asyncio.run(run())
+
+
+def test_buslog_endpoint_reports_lines_and_stats():
+    client = TestClient(create_app())
+    client.post("/demo/inject")          # pushes events through the tapped InMemoryBus
+    body = client.get("/bus/log").json()
+    assert body["stats"]["published"] >= 2
+    assert any("PUBLISH" in ln["line"] for ln in body["lines"])
 
 
 def test_dashboard_served():

@@ -12,12 +12,18 @@ Protocol and drop in with no change to connectors or routes.
 
 from __future__ import annotations
 
+import inspect
 import logging
-from typing import List, Protocol, runtime_checkable
+from collections import Counter, OrderedDict, deque
+from typing import Awaitable, Callable, Deque, List, Optional, Protocol, Union, runtime_checkable
 
-from .signal import SignalEvent
+from .signal import SignalEvent, utcnow
 
 logger = logging.getLogger("signalfabric.bus")
+
+# A subscriber receives each newly-published (non-duplicate) event. It may be
+# sync (e.g. the L2 store's `append`) or async; the bus awaits awaitables.
+Subscriber = Callable[[SignalEvent], Union[None, Awaitable[None]]]
 
 
 @runtime_checkable
@@ -54,3 +60,116 @@ class LoggingEventBus:
     @property
     def count(self) -> int:
         return len(self.published)
+
+
+class InMemoryBus:
+    """The Day-1 production-shaped bus (core track).
+
+    Implements the same ``EventBus`` Protocol the connectors and routes publish
+    to, so it drops in via ``create_app(bus=InMemoryBus())`` with no change to
+    any connector or route. Beyond the ``LoggingEventBus`` placeholder it adds
+    the three properties the downstream actually needs:
+
+      * **idempotency** — duplicates (same ``SignalEvent.dedup_id``) are dropped,
+        turning the connectors' at-least-once delivery into exactly-once
+        downstream. A bounded LRU of seen ids keeps memory flat.
+      * **fan-out to subscribers** — the L2 sink subscribes here
+        (``bus.subscribe(store.append)``); a failing subscriber is logged and
+        isolated, never dropping the event for the others.
+      * **replay** — a bounded ring buffer of recent events so a late subscriber
+        (or the SSE viewer) can be brought immediately current.
+
+    Ordering is FIFO: ``publish`` is awaited, fanning out synchronously in
+    subscription order. The Day-4 ``RedisStreamsBus`` implements the same
+    Protocol + subscribe/replay surface backed by Redis Streams — swap-in by
+    construction, no downstream change.
+    """
+
+    def __init__(self, *, history: int = 500, dedup_window: int = 50_000,
+                 log_buffer: int = 500) -> None:
+        self._subscribers: List[Subscriber] = []
+        self._history: Deque[SignalEvent] = deque(maxlen=history)
+        self._seen: "OrderedDict[str, None]" = OrderedDict()
+        self._dedup_window = dedup_window
+        # counters (observability — surfaced by stats())
+        self.published_count = 0
+        self.duplicate_count = 0
+        self.by_source: Counter = Counter()
+        self.by_entity: Counter = Counter()
+        # console log — one line per ingress (publish / dup-drop / subscriber-fail),
+        # kept in a bounded ring so the UI can tail it. last_log_line is the most
+        # recent entry (a viewer bus reads it after each publish).
+        self.log_lines: Deque[dict] = deque(maxlen=log_buffer)
+        self.last_log_line: Optional[dict] = None
+
+    def _emit(self, level: str, line: str) -> None:
+        entry = {"level": level, "line": line, "ts": utcnow().isoformat()}
+        self.last_log_line = entry
+        self.log_lines.append(entry)
+        getattr(logger, level, logger.info)("[bus] %s", line)
+
+    def recent_log(self, n: int = 200) -> List[dict]:
+        """Most recent console log lines (oldest → newest)."""
+        return list(self.log_lines)[-n:]
+
+    # --- subscription (the L2 sink registers here) ---
+    def subscribe(self, subscriber: Subscriber) -> None:
+        self._subscribers.append(subscriber)
+
+    def unsubscribe(self, subscriber: Subscriber) -> None:
+        if subscriber in self._subscribers:
+            self._subscribers.remove(subscriber)
+
+    # --- EventBus Protocol ---
+    async def publish(self, event: SignalEvent) -> None:
+        """Dedup, record, then fan out to subscribers in order.
+
+        Duplicate (already-seen ``dedup_id``) events are counted and dropped
+        before fan-out, so each source event reaches the sink exactly once.
+        """
+        dkey = event.dedup_id
+        if dkey in self._seen:
+            self.duplicate_count += 1
+            self._seen.move_to_end(dkey)  # LRU touch
+            self._emit("warning", f"DUP-DROP  {event.source_system.value}/{event.entity} "
+                                  f"key={event.key} dedup={dkey[:8]} (#{self.duplicate_count})")
+            return
+
+        self._seen[dkey] = None
+        if len(self._seen) > self._dedup_window:
+            self._seen.popitem(last=False)  # evict oldest
+
+        self._history.append(event)
+        self.published_count += 1
+        self.by_source[event.source_system.value] += 1
+        self.by_entity[event.entity] += 1
+        self._emit("info", f"PUBLISH   {event.source_system.value}/{event.entity} "
+                           f"key={event.key} dedup={dkey[:8]} -> subs={len(self._subscribers)}")
+
+        for subscriber in list(self._subscribers):
+            try:
+                result = subscriber(event)
+                if inspect.isawaitable(result):
+                    await result
+            except Exception:  # a bad subscriber must not lose the event for others
+                self._emit("error", f"SUBSCRIBER-FAIL {event.event_id}")
+                logger.exception("[bus] subscriber failed for %s", event.event_id)
+
+    # --- replay (bring a late subscriber / viewer current) ---
+    def replay(self) -> List[SignalEvent]:
+        """Snapshot of recent events, oldest → newest."""
+        return list(self._history)
+
+    @property
+    def count(self) -> int:
+        return self.published_count
+
+    def stats(self) -> dict:
+        return {
+            "published": self.published_count,
+            "duplicates_dropped": self.duplicate_count,
+            "subscribers": len(self._subscribers),
+            "history_size": len(self._history),
+            "by_source": dict(self.by_source),
+            "by_entity": dict(self.by_entity),
+        }

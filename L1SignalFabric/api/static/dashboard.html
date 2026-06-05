@@ -46,12 +46,26 @@
   .tailrow { display:flex; align-items:flex-end; gap:12px; }
   .spark { flex:1; height:40px; min-width:90px; display:block; }
 
-  .wrap { padding:8px 22px 22px; display:grid; grid-template-columns: 1.15fr .85fr; gap:18px; }
-  .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; }
+  /* tabs */
+  .tabs { display:flex; gap:6px; padding:6px 22px 0; border-bottom:1px solid var(--line); }
+  .tab { background:transparent; border:1px solid transparent; border-bottom:none; color:var(--muted);
+         padding:9px 15px; border-radius:10px 10px 0 0; font-weight:650; cursor:pointer;
+         display:flex; align-items:center; gap:8px; }
+  .tab:hover { color:var(--ink); }
+  .tab.active { color:var(--ink); background:var(--panel); border-color:var(--line); }
+  .tabbadge { font-size:10px; font-weight:800; color:#0b1020; background:var(--slack);
+              padding:1px 7px; border-radius:999px; }
+
+  .wrap { padding:0 22px 22px; }
+  .panel[hidden] { display:none; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:0 12px 12px 12px; }
   .card h2 { margin:0; padding:11px 14px; font-size:12px; color:var(--muted);
              text-transform:uppercase; letter-spacing:.6px; border-bottom:1px solid var(--line);
              display:flex; align-items:center; gap:8px; }
   .hint { color:var(--muted); font-size:12px; padding:10px 14px; }
+  .toolbar { display:flex; gap:8px; align-items:center; flex-wrap:wrap;
+             padding:11px 14px; border-bottom:1px solid var(--line); }
+  .toolbar label { color:var(--muted); font-size:12px; }
 
   /* trace */
   .flow { padding:12px 14px; display:flex; flex-direction:column; gap:14px; }
@@ -77,6 +91,40 @@
   .sum { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .time { color:#5f719b; font-size:11px; }
   .tag { font-size:10px; font-weight:800; color:#fff; background:var(--signoff); padding:1px 6px; border-radius:6px; margin-left:6px; }
+
+  /* bus log console */
+  .console { max-height:62vh; overflow-y:auto; padding:8px 10px; background:#070b18;
+             font:12px/1.55 ui-monospace,Menlo,Consolas,monospace; }
+  .logline { white-space:pre-wrap; word-break:break-word; padding:1px 2px; border-left:3px solid transparent; }
+  .logline .logt { color:#5f719b; }
+  .logline .lvl { font-weight:800; margin:0 8px; }
+  .logline.lvl-info    { color:#cdd8f5; } .logline.lvl-info .lvl    { color:#22c55e; }
+  .logline.lvl-warning { color:#fcd9a6; border-left-color:rgba(245,158,11,.6); } .logline.lvl-warning .lvl { color:#f59e0b; }
+  .logline.lvl-error   { color:#fecaca; border-left-color:rgba(244,63,94,.7); }   .logline.lvl-error .lvl   { color:#f43f5e; }
+  .logkey { font:11px ui-monospace,Menlo,Consolas,monospace; font-weight:800; padding:0 5px; border-radius:5px; background:#0f1730; }
+  .logkey.lvl-info{color:#22c55e;} .logkey.lvl-warning{color:#f59e0b;} .logkey.lvl-error{color:#f43f5e;}
+
+  /* clickable rows + detail drawer */
+  .row { cursor:pointer; }
+  .row.sel { background:rgba(110,168,255,.16) !important; box-shadow:inset 3px 0 0 #6ea8ff; }
+  .drawer { position:fixed; top:0; right:0; height:100vh; width:min(480px,92vw); z-index:50;
+            background:var(--panel); border-left:1px solid var(--line); box-shadow:-18px 0 40px rgba(0,0,0,.45);
+            transform:translateX(100%); transition:transform .22s ease; display:flex; flex-direction:column; }
+  .drawer.open { transform:translateX(0); }
+  .drawer-h { padding:13px 16px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:9px; }
+  .drawer-h .x { margin-left:auto; background:var(--panel2); border:1px solid var(--line); color:var(--ink);
+                 width:30px; height:30px; border-radius:8px; cursor:pointer; font-size:15px; line-height:1; }
+  .drawer-sub { padding:6px 16px 0; color:var(--muted); font-size:12px; word-break:break-word; }
+  .drawer-body { padding:12px 16px 22px; overflow-y:auto; display:flex; flex-direction:column; gap:12px; }
+  .sect .t { font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:.6px; margin-bottom:5px;
+             display:flex; align-items:center; gap:6px; }
+  .sect .num { background:#0f1730; border:1px solid var(--line); border-radius:50%; width:16px; height:16px;
+               display:inline-flex; align-items:center; justify-content:center; font-weight:800; color:#9fb4e0; }
+  .sect pre { margin:0; background:#070b18; border:1px solid var(--line); border-radius:8px; padding:9px 11px;
+              font:11.5px/1.5 ui-monospace,Menlo,Consolas,monospace; color:#cdd8f5;
+              white-space:pre-wrap; word-break:break-word; max-height:34vh; overflow:auto; }
+  .sect.l2 pre { border-color:rgba(34,197,94,.4); }
+  .sect .none { color:#7c89aa; font-size:12px; padding:8px 0; }
 </style>
 </head>
 <body>
@@ -84,14 +132,6 @@
   <h1>🛰️ L1 SignalFabric</h1>
   <span class="pill" id="health">health: …</span>
   <span><span class="dot" id="dot"></span><span id="connlbl" style="color:var(--muted)">connecting…</span></span>
-  <div class="controls">
-    <button type="button" class="primary" onclick="demo1()">▶ Run Demo 1 (inject Slack + email)</button>
-    <label for="speed">speed</label>
-    <input id="speed" type="number" value="6000" title="live replay speed multiplier" aria-label="live replay speed multiplier" />×
-    <button type="button" onclick="start()">Start live</button>
-    <button type="button" onclick="backlog()">Load history</button>
-    <button type="button" class="stop" onclick="stop()">■ Stop</button>
-  </div>
 </header>
 
 <!-- pipeline -->
@@ -113,26 +153,93 @@
   </div>
 </div>
 
+<!-- tabs -->
+<div class="tabs" role="tablist">
+  <button type="button" class="tab active" id="tab-demo" role="tab" aria-selected="true"
+          aria-controls="panel-demo" onclick="showTab('demo')">Demo&nbsp;1 — whole pipe (raw → normalized → L2)</button>
+  <button type="button" class="tab" id="tab-tail" role="tab" aria-selected="false"
+          aria-controls="panel-tail" onclick="showTab('tail')">⑤ Live tail (SSE)
+    <span class="tabbadge" id="tailbadge" hidden>0</span></button>
+  <button type="button" class="tab" id="tab-buslog" role="tab" aria-selected="false"
+          aria-controls="panel-buslog" onclick="showTab('buslog')">🧾 Bus log (InMemoryBus)
+    <span class="tabbadge" id="busbadge" hidden>0</span></button>
+</div>
+
 <div class="wrap">
   <!-- trace -->
-  <div class="card">
+  <section class="card panel" id="panel-demo" role="tabpanel" aria-labelledby="tab-demo">
     <h2>Demo&nbsp;1 — one event through the whole pipe (raw → normalized → L2)</h2>
-    <div id="trace" class="hint">Click <b>Run Demo 1</b> to inject a mock Slack message + a mock
-      sign-off email (built from the generated mock data) and watch them flow ingress → normalizer →
-      bus → L2 store, then scroll in the live tail. →</div>
-  </div>
+    <div class="toolbar">
+      <button type="button" class="primary" onclick="demo1()">▶ Run Demo 1 (inject Slack + email + ERP)</button>
+    </div>
+    <div id="trace" class="hint">Click <b>Run Demo 1</b> to inject a mock Slack message, a mock
+      sign-off email, and a mock ERP crew-DB change (all for the same crew change, built from the
+      generated mock data) and watch each flow ingress → normalizer → bus → L2 store, then scroll
+      in the <b>Live tail</b> tab.</div>
+  </section>
 
   <!-- feed -->
-  <div class="card">
-    <h2>⑤ Live tail (SSE) <span style="margin-left:auto;color:var(--muted)">newest first</span></h2>
+  <section class="card panel" id="panel-tail" role="tabpanel" aria-labelledby="tab-tail" hidden>
+    <h2>⑤ Live tail (SSE) <span style="margin-left:auto;color:var(--muted)">click a row → raw · normalized · L2 · newest first</span></h2>
+    <div class="toolbar">
+      <label for="speed">speed</label>
+      <input id="speed" type="number" value="6000" title="live replay speed multiplier" aria-label="live replay speed multiplier" />×
+      <button type="button" onclick="start()">Start live</button>
+      <button type="button" onclick="backlog()">Load history</button>
+      <button type="button" class="stop" onclick="stop()">■ Stop</button>
+    </div>
     <div id="rows" class="feed-rows"></div>
-  </div>
+  </section>
+
+  <!-- bus log -->
+  <section class="card panel" id="panel-buslog" role="tabpanel" aria-labelledby="tab-buslog" hidden>
+    <h2>🧾 InMemoryBus console — one line per ingress
+      <span id="busstats" style="margin-left:auto;color:var(--muted)">published 0 · dup-drop 0</span></h2>
+    <div class="toolbar">
+      <button type="button" onclick="clearBusLog()">Clear</button>
+      <span class="hint" style="padding:0">Tailing <code>core/bus.py</code> · <span class="logkey lvl-info">PUBLISH</span>
+        <span class="logkey lvl-warning">DUP-DROP</span> <span class="logkey lvl-error">SUBSCRIBER-FAIL</span></span>
+    </div>
+    <div id="buslog" class="console"></div>
+  </section>
 </div>
+
+<!-- detail drawer: raw → normalized → L2 for a clicked live-tail row -->
+<aside id="drawer" class="drawer" aria-hidden="true" aria-label="event detail">
+  <div class="drawer-h">
+    <span id="d-badge" class="badge">—</span>
+    <b id="d-entity">event</b>
+    <button type="button" class="x" onclick="closeDrawer()" aria-label="close detail">✕</button>
+  </div>
+  <div id="d-sub" class="drawer-sub"></div>
+  <div class="drawer-body">
+    <div class="sect"><div class="t"><span class="num">1</span> raw input (ingress)</div><div id="d-raw"></div></div>
+    <div class="sect"><div class="t"><span class="num">2</span> normalized (SignalEvent)</div><pre id="d-norm">—</pre></div>
+    <div class="sect l2"><div class="t"><span class="num">4</span> L2 record</div><div id="d-l2"></div></div>
+  </div>
+</aside>
 
 <script>
 const $ = id => document.getElementById(id);
 const SRC = ["SLACK","EMAIL","CREW_DB","CONTRACT_CLM","VESSEL_PORT_DB"];
 let windowCount = 0;
+let unread = 0, busUnread = 0;
+const rowData = new Map();   // rid → full SSE payload (raw/normalized/l2_record)
+let rid = 0, selRow = null;
+const srcShort = s => (s||"").replace("_DB","").replace("_PORT","");
+
+// ---- tab switching (Demo 1 ⇄ Live tail ⇄ Bus log) ----
+const TABS = ["demo","tail","buslog"];
+function showTab(name){
+  TABS.forEach(t => {
+    const on = t === name;
+    $("panel-"+t).hidden = !on;
+    $("tab-"+t).classList.toggle("active", on);
+    $("tab-"+t).setAttribute("aria-selected", on);
+  });
+  if(name === "tail"){ unread = 0; const b=$("tailbadge"); b.hidden=true; b.textContent="0"; }
+  if(name === "buslog"){ busUnread = 0; const b=$("busbadge"); b.hidden=true; b.textContent="0"; }
+}
 
 function setTotals(t){
   if(!t) return;
@@ -155,14 +262,83 @@ function addRow(d){
   const t = (d.ts||"").slice(11,19);
   const lbl = d.l2 && d.l2.label ? ` <span style="color:#5f719b">→ ${d.l2.label}</span>` : "";
   el.innerHTML =
-    `<span class="badge b-${d.source}">${d.source.replace("_DB","").replace("_PORT","")}</span>`+
+    `<span class="badge b-${d.source}">${srcShort(d.source)}</span>`+
     `<span class="ent">${d.entity}</span>`+
     `<span class="sum">${escapeHtml(d.summary||"")}${lbl}${d.signoff?'<span class="tag">SignOffEvent</span>':''}</span>`+
     `<span class="time">${t}</span>`;
+  const id = ++rid;
+  rowData.set(id, d);
+  el.dataset.rid = id;
+  el.addEventListener("click", () => openDetail(id));
   rows.insertBefore(el, rows.firstChild);
-  while(rows.childElementCount > 250) rows.removeChild(rows.lastChild);
+  while(rows.childElementCount > 250){
+    const gone = rows.lastChild;
+    if(gone.dataset && gone.dataset.rid) rowData.delete(+gone.dataset.rid);
+    rows.removeChild(gone);
+  }
   windowCount++;
+  // badge unread events while the Live tail tab isn't showing
+  if($("panel-tail").hidden){
+    unread++;
+    const b=$("tailbadge"); b.hidden=false; b.textContent = unread>99 ? "99+" : String(unread);
+  }
 }
+
+// ---- InMemoryBus console log ----
+function addBusLine(d){
+  const box = $("buslog");
+  const el = document.createElement("div");
+  const lvl = d.level || "info";
+  el.className = "logline lvl-" + lvl;
+  const t = (d.ts||"").slice(11,19);
+  el.innerHTML = `<span class="logt">${t}</span><span class="lvl">${lvl.toUpperCase()}</span>${escapeHtml(d.line||"")}`;
+  box.insertBefore(el, box.firstChild);
+  while(box.childElementCount > 400) box.removeChild(box.lastChild);
+  if($("panel-buslog").hidden){
+    busUnread++;
+    const b=$("busbadge"); b.hidden=false; b.textContent = busUnread>99 ? "99+" : String(busUnread);
+  }
+}
+function setBusStats(s){
+  if(!s) return;
+  $("busstats").textContent = `published ${s.published ?? 0} · dup-drop ${s.duplicates_dropped ?? 0} · subs ${s.subscribers ?? 0}`;
+}
+function clearBusLog(){ $("buslog").innerHTML=""; }
+
+// ---- detail drawer: raw → normalized → L2 for a clicked row ----
+function openDetail(id){
+  const d = rowData.get(id);
+  if(!d) return;
+  if(selRow) selRow.classList.remove("sel");
+  selRow = document.querySelector(`#rows .row[data-rid="${id}"]`);
+  if(selRow) selRow.classList.add("sel");
+
+  const badge = $("d-badge");
+  badge.className = "badge b-" + d.source;
+  badge.textContent = srcShort(d.source);
+  $("d-entity").textContent = d.entity + (d.signoff ? "  ·  SignOffEvent" : "");
+  $("d-sub").innerHTML = `${escapeHtml(d.summary||"")}<br>`+
+    `<span style="color:#5f719b">${escapeHtml((d.ts||"").replace("T"," ").slice(0,19))} · key ${escapeHtml(JSON.stringify(d.key||{}))}</span>`;
+
+  $("d-raw").innerHTML = d.raw
+    ? `<pre>${pretty(d.raw)}</pre>`
+    : `<div class="none">raw not captured for this row (e.g. ERP backlog batch poll)</div>`;
+  $("d-norm").innerHTML = d.normalized ? pretty(d.normalized) : "—";
+  $("d-l2").innerHTML = d.l2_record
+    ? `<pre>${pretty(d.l2_record)}</pre>`
+    : `<div class="none">no L2 record (event not projected)</div>`;
+
+  const dr = $("drawer");
+  dr.classList.add("open");
+  dr.setAttribute("aria-hidden", "false");
+}
+function closeDrawer(){
+  const dr = $("drawer");
+  dr.classList.remove("open");
+  dr.setAttribute("aria-hidden", "true");
+  if(selRow){ selRow.classList.remove("sel"); selRow = null; }
+}
+document.addEventListener("keydown", e => { if(e.key === "Escape") closeDrawer(); });
 
 // ---- signals/sec sparkline (last 60s) ----
 const HIST = 60;
@@ -196,11 +372,11 @@ window.addEventListener("resize", drawSpark);
 // ---- Demo 1: render the per-stage trace ----
 function laneHtml(item){
   const so = (item.l2 && item.l2.kind === "signoff_event");
-  const src = item.source.toUpperCase();
-  const badge = src === "SLACK" ? "SLACK" : "EMAIL";
+  // badge by the normalized source_system (SLACK / EMAIL / CREW_DB / …)
+  const ss = (item.normalized && item.normalized.source_system) || String(item.source||"").toUpperCase();
   return `<div class="lane">
-    <div class="lane-h"><span class="badge b-${src==='SLACK'?'SLACK':'EMAIL'}">${badge}</span>
-      <b>${item.source} ingress</b>${so?'<span class="tag">→ SignOffEvent</span>':''}</div>
+    <div class="lane-h"><span class="badge b-${ss}">${srcShort(ss)}</span>
+      <b>${escapeHtml(item.source)} ingress</b>${so?'<span class="tag">→ SignOffEvent</span>':''}</div>
     <div class="steps">
       <div class="step"><div class="t">① raw input (ingress)</div><pre>${pretty(item.raw)}</pre></div>
       <div class="chev">→</div>
@@ -223,8 +399,18 @@ async function demo1(){
 
 function connect(){
   const es = new EventSource("/stream");
-  es.addEventListener("snapshot", e => { const d=JSON.parse(e.data); setTotals(d.totals); (d.recent||[]).forEach(addRow); });
-  es.onmessage = e => { const d=JSON.parse(e.data); if(d.type==="signal"){ setTotals(d.totals); addRow(d); } };
+  es.addEventListener("snapshot", e => {
+    const d=JSON.parse(e.data);
+    setTotals(d.totals);
+    (d.recent||[]).forEach(addRow);
+    (d.buslog||[]).forEach(addBusLine);
+    setBusStats(d.bus_stats);
+  });
+  es.onmessage = e => {
+    const d=JSON.parse(e.data);
+    if(d.type==="signal"){ setTotals(d.totals); addRow(d); }
+    else if(d.type==="buslog"){ addBusLine(d); }
+  };
   es.onopen = () => { $("dot").className="dot on"; $("connlbl").textContent="connected"; };
   es.onerror = () => { $("dot").className="dot"; $("connlbl").textContent="reconnecting…"; };
 }
@@ -239,6 +425,7 @@ async function health(){
     const h = await (await fetch("/healthz")).json();
     $("health").textContent = `health: ${h.status} · ${h.connectors.length} connectors · L2 ${h.l2_records ?? 0}`;
     $("health").className = "pill " + (h.status==="ok" ? "green" : "red");
+    try{ const b = await (await fetch("/bus/log?n=1")).json(); setBusStats(b.stats); }catch(e){}
   }catch(e){ $("health").textContent="health: down"; $("health").className="pill red"; }
 }
 
