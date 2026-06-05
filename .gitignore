@@ -19,3 +19,6 @@ out/
 
 # Docker volumes
 postgres-data/
+
+# Nested clone of separate repo (cognixoneai/cognix) - not tracked here
+docs/cognix/
