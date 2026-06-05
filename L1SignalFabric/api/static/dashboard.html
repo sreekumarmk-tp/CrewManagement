@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>L1 SignalFabric — Live</title>
+<style>
+  :root {
+    --bg:#0b1020; --panel:#141b33; --panel2:#1b2440; --ink:#e6ecff; --muted:#8da2c8;
+    --line:#26314f; --slack:#7c5cff; --email:#f59e0b; --crew:#22c55e;
+    --contract:#06b6d4; --vessel:#ec4899; --signoff:#f43f5e;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.5 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+         background:var(--bg); color:var(--ink); }
+  header { padding:16px 22px; border-bottom:1px solid var(--line);
+           display:flex; align-items:center; gap:16px; flex-wrap:wrap; }
+  h1 { font-size:17px; margin:0; font-weight:650; letter-spacing:.2px; }
+  .dot { width:9px; height:9px; border-radius:50%; background:#475569; display:inline-block; margin-right:6px; }
+  .dot.on { background:#22c55e; box-shadow:0 0 8px #22c55e; }
+  .controls { margin-left:auto; display:flex; gap:8px; align-items:center; }
+  button { background:var(--panel2); color:var(--ink); border:1px solid var(--line);
+           padding:7px 12px; border-radius:8px; cursor:pointer; font-weight:600; }
+  button:hover { border-color:#3b496f; }
+  button.primary { background:#2547d0; border-color:#2547d0; }
+  button.stop { background:#7f1d2e; border-color:#7f1d2e; }
+  input { width:64px; background:var(--panel2); color:var(--ink); border:1px solid var(--line);
+          border-radius:8px; padding:6px 8px; }
+  .wrap { padding:18px 22px; display:grid; grid-template-columns: 320px 1fr; gap:18px; }
+  .cards { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:12px 14px; }
+  .card .n { font-size:26px; font-weight:750; }
+  .card .l { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.6px; }
+  .card.total .n { color:#fff; } .card.signoff .n { color:var(--signoff); }
+  .feed { background:var(--panel); border:1px solid var(--line); border-radius:12px;
+          height:calc(100vh - 150px); overflow:hidden; display:flex; flex-direction:column; }
+  .feed h2 { margin:0; padding:12px 14px; font-size:12px; color:var(--muted);
+             text-transform:uppercase; letter-spacing:.6px; border-bottom:1px solid var(--line); }
+  #rows { overflow-y:auto; padding:6px; }
+  .row { display:flex; gap:10px; align-items:baseline; padding:7px 8px; border-radius:8px; }
+  .row:nth-child(odd){ background:#0f1730; }
+  .row.so { background:rgba(244,63,94,.12); border:1px solid rgba(244,63,94,.4); }
+  .badge { font-size:10px; font-weight:800; padding:2px 7px; border-radius:999px; white-space:nowrap;
+           letter-spacing:.4px; color:#0b1020; }
+  .b-SLACK{background:var(--slack);color:#fff;} .b-EMAIL{background:var(--email);}
+  .b-CREW_DB{background:var(--crew);} .b-CONTRACT_CLM{background:var(--contract);}
+  .b-VESSEL_PORT_DB{background:var(--vessel);color:#fff;}
+  .ent { color:var(--muted); font-size:12px; min-width:88px; }
+  .sum { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .time { color:#5f719b; font-size:11px; white-space:nowrap; }
+  .pill { font-size:10px; font-weight:800; color:#fff; background:var(--signoff);
+          padding:1px 6px; border-radius:6px; margin-left:6px; }
+  .legend { display:flex; gap:12px; flex-wrap:wrap; margin-top:12px; color:var(--muted); font-size:11px; }
+  .legend i { width:9px; height:9px; border-radius:3px; display:inline-block; margin-right:5px; vertical-align:middle; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🛰️ L1 SignalFabric — live stream</h1>
+  <span id="conn"><span class="dot" id="dot"></span><span id="connlbl" style="color:var(--muted)">connecting…</span></span>
+  <div class="controls">
+    speed <input id="speed" type="number" value="6000" />×
+    <button class="primary" onclick="start()">▶ Start live</button>
+    <button onclick="backlog()">⏬ Load history</button>
+    <button class="stop" onclick="stop()">■ Stop</button>
+  </div>
+</header>
+
+<div class="wrap">
+  <div>
+    <div class="cards">
+      <div class="card total"><div class="n" id="c-total">0</div><div class="l">Total signals</div></div>
+      <div class="card signoff"><div class="n" id="c-signoff">0</div><div class="l">Sign-off → L2</div></div>
+      <div class="card"><div class="n" id="c-SLACK">0</div><div class="l">Slack</div></div>
+      <div class="card"><div class="n" id="c-EMAIL">0</div><div class="l">Email</div></div>
+      <div class="card"><div class="n" id="c-CREW_DB">0</div><div class="l">Crew DB</div></div>
+      <div class="card"><div class="n" id="c-CONTRACT_CLM">0</div><div class="l">Contract CLM</div></div>
+      <div class="card"><div class="n" id="c-VESSEL_PORT_DB">0</div><div class="l">Vessel/Port</div></div>
+      <div class="card"><div class="n" id="c-rate">0</div><div class="l">Signals / sec</div></div>
+    </div>
+    <div class="legend">
+      <span><i style="background:var(--slack)"></i>Slack</span>
+      <span><i style="background:var(--email)"></i>Email</span>
+      <span><i style="background:var(--crew)"></i>Crew DB</span>
+      <span><i style="background:var(--contract)"></i>Contract</span>
+      <span><i style="background:var(--vessel)"></i>Vessel/Port</span>
+    </div>
+  </div>
+
+  <div class="feed">
+    <h2>Live signal feed (newest first)</h2>
+    <div id="rows"></div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const SRC = ["SLACK","EMAIL","CREW_DB","CONTRACT_CLM","VESSEL_PORT_DB"];
+let windowCount = 0;
+
+function setTotals(t){
+  if(!t) return;
+  $("c-total").textContent = t.total ?? 0;
+  $("c-signoff").textContent = t.signoff ?? 0;
+  SRC.forEach(s => $("c-"+s).textContent = (t.by_source && t.by_source[s]) || 0);
+}
+
+function addRow(d){
+  const rows = $("rows");
+  const el = document.createElement("div");
+  el.className = "row" + (d.signoff ? " so" : "");
+  const t = (d.ts||"").slice(11,19);
+  el.innerHTML =
+    `<span class="badge b-${d.source}">${d.source.replace("_DB","").replace("_PORT","")}</span>`+
+    `<span class="ent">${d.entity}</span>`+
+    `<span class="sum">${escapeHtml(d.summary||"")}${d.signoff?'<span class="pill">SignOffEvent</span>':''}</span>`+
+    `<span class="time">${t}</span>`;
+  rows.insertBefore(el, rows.firstChild);
+  while(rows.childElementCount > 250) rows.removeChild(rows.lastChild);
+  windowCount++;
+}
+function escapeHtml(s){return s.replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
+
+// signals/sec gauge
+setInterval(()=>{ $("c-rate").textContent = windowCount; windowCount = 0; }, 1000);
+
+function connect(){
+  const es = new EventSource("/stream");
+  es.addEventListener("snapshot", e => {
+    const d = JSON.parse(e.data);
+    setTotals(d.totals);
+    (d.recent||[]).forEach(addRow);
+  });
+  es.onmessage = e => {
+    const d = JSON.parse(e.data);
+    if(d.type === "signal"){ setTotals(d.totals); addRow(d); }
+  };
+  es.onopen = () => { $("dot").className="dot on"; $("connlbl").textContent="connected"; };
+  es.onerror = () => { $("dot").className="dot"; $("connlbl").textContent="reconnecting…"; };
+}
+
+async function post(url){ try{ const r=await fetch(url,{method:"POST"}); return await r.json(); }catch(e){ return {error:String(e)}; } }
+async function start(){ const s=$("speed").value||6000; await post(`/demo/start?speed=${s}`); }
+async function stop(){ await post("/demo/stop"); }
+async function backlog(){ await post("/demo/backlog"); }
+
+connect();
+</script>
+</body>
+</html>

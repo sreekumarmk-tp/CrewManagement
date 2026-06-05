@@ -71,6 +71,20 @@ make stream         # drain the historical backlog through the connectors (idemp
 make stream-live    # replay the future runway on a virtual clock (world in motion)
 ```
 
+### Live browser dashboard
+
+```bash
+make seed           # once, if you haven't
+make dashboard      # serves on :8001
+# open http://localhost:8001/  → click "Start live" (or "Load history")
+```
+
+`GET /` is a single-file dashboard ([`api/static/dashboard.html`](api/static/dashboard.html))
+that subscribes to **`GET /stream`** (Server-Sent Events) and shows per-source
+counters, a sign-off→L2 tally, a signals/sec gauge, and a live feed. The
+`POST /demo/{start,stop,backlog}` routes drive the replay *inside the server* via
+the `BroadcastBus` (an SSE-capable `EventBus`; swap in the real InMemoryBus later).
+
 ## Layout
 
 ```
@@ -82,6 +96,8 @@ L1SignalFabric/
   api/
     app.py              # FastAPI factory (wires connectors + bus)
     routes/             # health.py (/healthz), slack.py (/slack/events)
+    live.py             # BroadcastBus + /stream (SSE) + / (dashboard) + /demo/*
+    static/dashboard.html  # single-file live dashboard
   demo/                 # generator + seed + stream (Freight-style demo data)
   data/                 # generated dataset (reproducible via `make seed`)
   scripts/smoke.py      # Day-1 ingress smoke

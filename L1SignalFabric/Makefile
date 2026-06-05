@@ -1,4 +1,4 @@
-.PHONY: install test run smoke seed stream stream-live clean
+.PHONY: install test run dashboard smoke seed stream stream-live clean
 
 PY ?= python3
 PORT ?= 8001
@@ -7,9 +7,15 @@ SPEED ?= 6000
 install:
 	$(PY) -m pip install -r requirements.txt
 
-# Run the L1 SignalFabric service (Slack ingress + /healthz)
+# Run the L1 SignalFabric service (Slack ingress + /healthz + live dashboard)
 run:
 	$(PY) -m uvicorn api.app:app --host 0.0.0.0 --port $(PORT) --reload
+
+# Same as `run`, but reminds you where the live dashboard is. Open it, click
+# "Start live" (needs `make seed` first).
+dashboard:
+	@echo "Live dashboard → http://localhost:$(PORT)/   (run 'make seed' first if no data)"
+	$(PY) -m uvicorn api.app:app --host 0.0.0.0 --port $(PORT)
 
 test:
 	$(PY) -m pytest -q

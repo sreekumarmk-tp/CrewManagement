@@ -16,8 +16,9 @@ from config import SERVICE_NAME, SERVICE_VERSION, Settings
 from config import settings as default_settings
 from connectors.erp import ErpConnector, InMemoryOutboxAdapter
 from connectors.slack import SlackConnector
-from core.bus import EventBus, LoggingEventBus
+from core.bus import EventBus
 
+from . import live
 from .routes import health, slack
 
 logging.basicConfig(level=logging.INFO)
@@ -31,8 +32,9 @@ def create_app(
     cfg = settings or default_settings
     app = FastAPI(title=SERVICE_NAME, version=SERVICE_VERSION)
 
-    # --- bus (placeholder until Sruthy's InMemoryBus is injected) ---
-    app.state.bus = bus or LoggingEventBus()
+    # --- bus: SSE-broadcasting viewer bus by default (drives the dashboard);
+    #     pass Sruthy's InMemoryBus to create_app(bus=...) to integrate L2 ---
+    app.state.bus = bus or live.BroadcastBus()
 
     # --- connectors ---
     app.state.slack = SlackConnector(
@@ -50,6 +52,7 @@ def create_app(
     # --- routes ---
     app.include_router(health.router)
     app.include_router(slack.router)
+    app.include_router(live.router)   # GET / (dashboard), /stream (SSE), /demo/*
 
     return app
 
