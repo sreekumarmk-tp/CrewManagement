@@ -14,7 +14,7 @@ feedback loop back into L3 (read precedent before ranking).
 """
 from datetime import datetime
 
-from sqlalchemy import Column, DateTime, Float, Integer, JSON, String
+from sqlalchemy import Boolean, Column, DateTime, Float, Integer, JSON, String
 
 from database.db import Base
 
@@ -40,6 +40,12 @@ class DecisionTrace(Base):
 
     # ── The trajectory (flattened from agent_executions[]) ─────────────────────
     trajectory = Column(JSON, nullable=True)                # ordered [{agent, tool, input, output, ...}]
+
+    # ── Precedent Index (L4 #2) — what the history lookup returned at the start ─
+    # of this matching query. is_repeat_query is True when ≥1 prior placement for
+    # the same vacancy profile existed (i.e. this is the 2nd+ query for it).
+    is_repeat_query = Column(Boolean, default=False)
+    consulted_precedents = Column(JSON, nullable=True)      # {is_repeat, matches, summary, query}
 
     # ── The outcome (NULL at capture; filled at the compliance gate) ───────────
     outcome_status = Column(String, default="pending")      # pending | signed_on | rejected
@@ -68,6 +74,8 @@ class DecisionTrace(Base):
             "match_reasons": self.match_reasons or [],
             "alternatives": self.alternatives or [],
             "trajectory": self.trajectory or [],
+            "is_repeat_query": bool(self.is_repeat_query),
+            "consulted_precedents": self.consulted_precedents,
             "outcome_status": self.outcome_status,
             "compliance_status": self.compliance_status,
             "compliance_score": self.compliance_score,

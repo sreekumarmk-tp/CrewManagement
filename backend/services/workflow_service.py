@@ -13,6 +13,7 @@ from database.models import WorkflowState, WorkflowStatus
 from database.crew_repository import get_crew_by_id, get_sign_on_crew, update_crew
 from services.state_service import state_service
 from services.decision_trace_service import decision_trace_service
+from services.precedent_service import precedent_service
 
 log = structlog.get_logger()
 
@@ -81,6 +82,20 @@ class WorkflowService:
         self, workflow: WorkflowState, sign_off_crew: Dict[str, Any]
     ):
         try:
+            # L4 #2: consult the Precedent Index at the START of the matching query.
+            # On the 2nd+ sign-off for the same vacancy profile (rank/grade/port)
+            # this returns prior placements. Stashed on the workflow so the captured
+            # decision records what the lookup returned.
+            precedent = await precedent_service.consult(
+                rank=sign_off_crew.get("rank"),
+                grade=sign_off_crew.get("grade"),
+                port=sign_off_crew.get("port"),
+                nationality=sign_off_crew.get("nationality"),
+                broadcast=self._event_callback,
+                workflow_id=workflow.workflow_id,
+            )
+            workflow.memory.setdefault("short_term", {})["precedent"] = precedent
+
             master = MasterAgent(event_callback=self._event_callback)
             updated = await master.orchestrate_sign_off(workflow, sign_off_crew, auto_proceed=True)
             await state_service.update_workflow(updated)
@@ -165,8 +180,9 @@ class WorkflowService:
 
         # Pass rule: 'passed' or 'warning' (conditional) sign the crew on; 'failed' rejects.
         if status in ("passed", "warning"):
-            # L4: stamp the decision's outcome (closes the trace's loop).
-            await decision_trace_service.record_outcome(
+            # L4: stamp the decision's outcome (closes the trace's loop), then
+            # append the completed placement to the Precedent Index (#2).
+            updated_decision = await decision_trace_service.record_outcome(
                 workflow.workflow_id,
                 outcome_status="signed_on",
                 compliance_status=status,
@@ -174,6 +190,8 @@ class WorkflowService:
                 outcome_reasons=warnings,
                 broadcast=self._event_callback,
             )
+            if updated_decision:
+                await precedent_service.record_placement(updated_decision)
             row = await update_crew(matched_id, pool="signoff", status="Onboard")
             if row:
                 log.info("auto_compliance.signed_on", crew_id=matched_id, status=status)
@@ -197,8 +215,9 @@ class WorkflowService:
                 log.warning("auto_compliance.signon_crew_not_found", crew_id=matched_id)
         else:
             log.info("auto_compliance.rejected", crew_id=matched_id, status=status)
-            # L4: stamp the decision's outcome (rejected at the compliance gate).
-            await decision_trace_service.record_outcome(
+            # L4: stamp the decision's outcome (rejected at the compliance gate),
+            # then append the completed placement to the Precedent Index (#2).
+            updated_decision = await decision_trace_service.record_outcome(
                 workflow.workflow_id,
                 outcome_status="rejected",
                 compliance_status=status,
@@ -206,6 +225,8 @@ class WorkflowService:
                 outcome_reasons=failures,
                 broadcast=self._event_callback,
             )
+            if updated_decision:
+                await precedent_service.record_placement(updated_decision)
             await self._event_callback("sign_on_rejected", "Compliance Agent", {
                 "workflow_id": workflow.workflow_id,
                 "crew_id": matched_id,

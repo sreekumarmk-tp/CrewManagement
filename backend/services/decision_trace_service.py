@@ -26,6 +26,7 @@ from database.decision_repository import (
     update_outcome_by_workflow,
 )
 from database.models import WorkflowState
+from services.precedent_service import precedent_service
 
 log = structlog.get_logger()
 
@@ -145,7 +146,10 @@ class DecisionTraceService:
         ranked = match_result.get("ranked_candidates") or []
         alternatives = [c for c in ranked if c.get("crew_id") != chosen_id]
 
-        reason = (workflow.memory or {}).get("short_term", {}).get("reason")
+        short_term = (workflow.memory or {}).get("short_term", {})
+        reason = short_term.get("reason")
+        # Precedent Index (#2): what the lookup returned at the start of this query.
+        precedent = short_term.get("precedent") or {}
 
         return {
             "decision_id": str(uuid.uuid4()),
@@ -177,6 +181,8 @@ class DecisionTraceService:
             "match_reasons": matched.get("match_reasons", []),
             "alternatives": alternatives,
             "trajectory": self._flatten_trajectory(workflow),
+            "is_repeat_query": bool(precedent.get("is_repeat")),
+            "consulted_precedents": precedent or None,
             "outcome_status": "pending",
             "session_id": workflow.session_id,
             "total_tokens": workflow.total_tokens,
@@ -225,16 +231,28 @@ class DecisionTraceService:
     # ── Demo seeding ──────────────────────────────────────────────────────────────
 
     async def seed_demo(self) -> dict:
-        """Insert a couple of realistic mock decisions so the L4 view has data to show
-        before any live workflow has run. Idempotent-ish: each call adds fresh rows."""
+        """Insert realistic mock decisions so the L4 view has data before any live
+        workflow has run. Processed IN ORDER so the Precedent Index builds up: each
+        decision consults the precedents recorded by the earlier ones, then (if
+        completed) records its own — so a later decision with a repeated vacancy
+        profile shows up as a 2nd+ query. Each call adds fresh rows."""
         seeded = []
         for spec in _DEMO_DECISIONS:
-            record = self._mock_record(spec)
-            seeded.append(await insert_decision(record))
+            dep = spec["departing"]
+            # Consult against precedents already seeded in THIS pass (and any prior).
+            precedent = await precedent_service.consult(
+                rank=dep.get("rank"), grade=dep.get("grade"),
+                port=dep.get("port"), nationality=dep.get("nationality"),
+            )
+            record = self._mock_record(spec, precedent)
+            stored = await insert_decision(record)
+            seeded.append(stored)
+            if spec["outcome_status"] in ("signed_on", "rejected"):
+                await precedent_service.record_placement(stored)
         log.info("decision.seed_demo", count=len(seeded))
         return {"seeded": len(seeded), "decisions": seeded}
 
-    def _mock_record(self, spec: Dict[str, Any]) -> dict:
+    def _mock_record(self, spec: Dict[str, Any], precedent: Dict[str, Any]) -> dict:
         return {
             "decision_id": str(uuid.uuid4()),
             "workflow_id": f"demo-{uuid.uuid4().hex[:8]}",
@@ -247,6 +265,8 @@ class DecisionTraceService:
             "match_reasons": spec["match_reasons"],
             "alternatives": spec["alternatives"],
             "trajectory": spec["trajectory"],
+            "is_repeat_query": bool(precedent.get("is_repeat")),
+            "consulted_precedents": precedent or None,
             "outcome_status": spec["outcome_status"],
             "compliance_status": spec.get("compliance_status"),
             "compliance_score": spec.get("compliance_score"),
@@ -405,6 +425,37 @@ _DEMO_DECISIONS: List[Dict[str, Any]] = [
         "total_cost": 0.236,
         "cache_read_tokens": 14000,
         "cache_creation_tokens": 3100,
+    },
+    {
+        # Repeat of decision #1's vacancy profile (Chief Officer @ Singapore) — so
+        # this one consults the Precedent Index and finds Rajesh Kumar's prior
+        # placement: it's the 2nd query for this profile.
+        "trigger": "Sign-off initiated for Nikolai Petrov (CM-1377)",
+        "departing": {
+            "crew_id": "CM-1377", "name": "Nikolai Petrov", "rank": "Chief Officer",
+            "grade": "A", "vessel": "MV Pacific Dawn", "port": "Singapore", "nationality": "Russian",
+        },
+        "chosen": {
+            "crew_id": "CM-2733", "name": "Aleksei Ivanov", "rank": "Chief Officer",
+            "grade": "A", "port": "Singapore", "nationality": "Russian",
+        },
+        "confidence": 90.2,
+        "match_reasons": ["Exact rank match", "Grade matches", "Same port: Singapore", "15 years experience"],
+        "alternatives": [
+            {"crew_id": "CM-2780", "name": "Marco Bianchi", "rank": "Chief Officer", "confidence_score": 82.7, "match_reasons": ["Exact rank match", "Grade matches"]},
+        ],
+        "trajectory": [
+            {"kind": "agent", "agent_name": "Crew Matching Agent", "agent_type": "crew_matching", "status": "completed", "confidence_score": 0.902, "tokens_used": 0, "duration_ms": 4000},
+            {"kind": "tool", "agent_name": "Crew Matching Agent", "tool_name": "searchCrew", "input": '{"rank": "Chief Officer", "port": "Singapore"}', "output": '{"found": 4}', "duration_ms": 115, "timestamp": None},
+            {"kind": "tool", "agent_name": "Crew Matching Agent", "tool_name": "rankCrew", "input": '{"candidates": ["CM-2733", "CM-2780"]}', "output": '{"ranked_candidates": [{"crew_id": "CM-2733", "confidence_score": 90.2}]}', "duration_ms": 98, "timestamp": None},
+        ],
+        "outcome_status": "signed_on",
+        "compliance_status": "passed",
+        "compliance_score": 97.0,
+        "total_tokens": 17600,
+        "total_cost": 0.205,
+        "cache_read_tokens": 11800,
+        "cache_creation_tokens": 2900,
     },
 ]
 

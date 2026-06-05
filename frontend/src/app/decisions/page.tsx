@@ -23,6 +23,7 @@ import { decisionApi } from "@/lib/api";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import { useWorkflowStore } from "@/store/workflowStore";
 import DecisionGraph from "@/components/decisions/DecisionGraph";
+import PrecedentPanel from "@/components/decisions/PrecedentPanel";
 import type { DecisionTrace, DecisionTrajectoryStep } from "@/types";
 
 // How long each decision stays on screen during the auto-play walkthrough.
@@ -114,6 +115,26 @@ export default function DecisionsPage() {
   useEffect(() => {
     const latest = events[0];
     if (!latest) return;
+
+    // Precedent Index consulted at the start of a sign-off (before the decision
+    // is logged) — surface it as a toast so the lookup is visible live.
+    if (latest.event_type === "precedent_consulted") {
+      const key = `precedent:${latest.timestamp}`;
+      if (key !== lastRefreshKey.current) {
+        lastRefreshKey.current = key;
+        const d = latest.data || {};
+        if (!demoActiveRef.current) {
+          toast(
+            d.is_repeat
+              ? `Precedent Index: ${d.count} prior placement(s) for ${d.rank} @ ${d.port}`
+              : `Precedent Index: first placement for ${d.rank} @ ${d.port}`,
+            { icon: "📚" }
+          );
+        }
+      }
+      return;
+    }
+
     if (latest.event_type !== "decision_logged" && latest.event_type !== "decision_outcome") return;
 
     const key = `${latest.event_type}:${latest.timestamp}`;
@@ -301,6 +322,7 @@ export default function DecisionsPage() {
           {/* Right: graph + trajectory */}
           <div className="col-span-12 lg:col-span-8 space-y-4">
             <DecisionGraph decision={selected} onOutcomeRevealed={handleOutcomeRevealed} />
+            {selected && <PrecedentPanel decision={selected} />}
             {selected && <TrajectoryTrace decision={selected} />}
           </div>
         </div>

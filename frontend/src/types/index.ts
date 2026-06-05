@@ -341,6 +341,41 @@ export interface DecisionAlternative {
   match_reasons?: string[];
 }
 
+// ─── Precedent Index (L4 #2) ───────────────────────────────────────────────────
+
+export interface PlacementPrecedent {
+  precedent_id: string;
+  decision_id?: string;
+  created_at?: string;
+  rank?: string;
+  grade?: string;
+  port?: string;
+  nationality?: string;
+  chosen_crew_id?: string;
+  chosen_crew_name?: string;
+  chosen_crew_rank?: string;
+  confidence_score?: number;
+  outcome_status?: string;
+  compliance_status?: string;
+  compliance_score?: number;
+}
+
+export interface PrecedentSummary {
+  total: number;
+  signed_on: number;
+  rejected: number;
+  avg_compliance_score?: number | null;
+  last_choice?: { name?: string; outcome?: string } | null;
+}
+
+export interface PrecedentConsultation {
+  is_repeat: boolean;
+  matches: PlacementPrecedent[];
+  summary: PrecedentSummary;
+  query?: { rank?: string; grade?: string; port?: string };
+  consulted_at?: string;
+}
+
 export interface DecisionTrace {
   decision_id: string;
   workflow_id: string;
@@ -357,6 +392,8 @@ export interface DecisionTrace {
   match_reasons: string[];
   alternatives: DecisionAlternative[];
   trajectory: DecisionTrajectoryStep[];
+  is_repeat_query?: boolean;
+  consulted_precedents?: PrecedentConsultation | null;
   outcome_status: DecisionOutcomeStatus;
   compliance_status?: string;
   compliance_score?: number;
