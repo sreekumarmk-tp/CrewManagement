@@ -90,7 +90,14 @@ per-stage live counts (ingress → normalized → bus → L2), a **Run Demo 1** 
 (`raw → normalized → L2 record`), and **Start live / Load history** to replay the
 generated dataset over SSE.
 
-A Graphviz source mirroring this map lives at
-[`docs/images/components.dot`](images/components.dot) (render with
-`dot -Tpng docs/images/components.dot -o docs/images/components.png` once
-Graphviz is installed).
+A rendered Graphviz version of this map (green = pre-existing, amber = added):
+
+![The six components — mock-event generator → connectors → SignalEvent → InMemoryBus → L2 sink, with the SSE viewer bus driving the dashboard and docker-compose hosting the stack.](images/components.png)
+
+Source: [`docs/images/components.dot`](images/components.dot) — re-render with
+`dot -Tpng -Gdpi=150 docs/images/components.dot -o docs/images/components.png`.
+
+For the full component-by-component **Role & Responsibility / Where it's
+implemented** breakdown and the live **implementation status**, see
+[`IMPLEMENTATION.md`](IMPLEMENTATION.md)
+([`.docx`](L1_SignalFabric_Implementation.docx)).

@@ -8,8 +8,11 @@ a single canonical stream — `SignalEvent` — that the L2 knowledge graph (Org
 > **Design principle:** continuous streams, *not* batch snapshots. Every event is
 > an append-only, typed, timestamped `SignalEvent` with `operation = DELTA`.
 
-See [`docs/DESIGN.md`](docs/DESIGN.md), [`docs/PLAN.md`](docs/PLAN.md), and
-[`docs/TEST.md`](docs/TEST.md).
+See [`docs/DESIGN.md`](docs/DESIGN.md), [`docs/PLAN.md`](docs/PLAN.md),
+[`docs/TEST.md`](docs/TEST.md), and — for the component-by-component **Role &
+Responsibility / Where it's implemented** map —
+[`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md)
+([`.docx`](docs/L1_SignalFabric_Implementation.docx)).
 
 ## Scope of this scaffold — Day 1 (Jun 08), Sreekumar's track
 
@@ -128,7 +131,7 @@ L1SignalFabric/
   data/                 # generated dataset (reproducible via `make seed`)
   scripts/smoke.py      # Day-1 ingress smoke
   tests/                # pytest suite
-  docs/                 # PLAN / DESIGN / TEST / COMPONENTS (+ .docx, diagrams)
+  docs/                 # PLAN / DESIGN / TEST / COMPONENTS / IMPLEMENTATION (+ .docx, diagrams)
   Dockerfile            # service image
   docker-compose.yml    # signalfabric + redis (Day-4 RedisStreamsBus seam)
 ```
