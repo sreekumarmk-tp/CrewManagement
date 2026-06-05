@@ -63,9 +63,25 @@ async def run_cypher(query: str) -> List[Dict[str, Any]]:
     """
     if not age_enabled():
         return []
-    sql = text(f"SELECT * FROM cypher('{GRAPH_NAME}', $$ {query} $$) AS (v agtype);")
+    # NB: use exec_driver_sql (raw SQL straight to the driver), NOT text(). Cypher's
+    # label/relationship syntax (e.g. `[:HOLDS]`, `(n:Crew)`) contains colons that
+    # SQLAlchemy's text() would mis-parse as `:param` bind placeholders. The query is
+    # already fully inlined inside the `$$ ... $$` dollar-quoted block, so no binding
+    # is needed.
+    sql = f"SELECT * FROM cypher('{GRAPH_NAME}', $$ {query} $$) AS (v agtype);"
     async with AsyncSessionLocal() as session:
-        rows = (await session.execute(sql)).fetchall()
+        conn = await session.connection()
+        # AGE's cypher() lives in ag_catalog and needs the extension LOADed + the
+        # search_path set on THIS connection. The connect-event hook is unreliable
+        # through the async asyncpg adapter (the sync cursor call there can no-op),
+        # so we (idempotently) ensure it per call. LOAD is cheap and a single
+        # cypher() round-trip stays well under the latency budget.
+        await conn.exec_driver_sql("LOAD 'age';")
+        await conn.exec_driver_sql('SET search_path = ag_catalog, "$user", public;')
+        rows = (await conn.exec_driver_sql(sql)).fetchall()
+        # cypher() can MUTATE (MERGE/SET/CREATE), so commit — otherwise writes roll
+        # back when the session closes. A commit after a read-only query is a no-op.
+        await session.commit()
         out: List[Dict[str, Any]] = []
         for r in rows:
             try:
