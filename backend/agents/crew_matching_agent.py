@@ -67,6 +67,12 @@ TOOLS = [
 # agents/skills/crew_matching/ via agents.skills.build_instructions().
 # See agents/skills/README.md for the layout and INTEGRATION.md for context.
 
+# L4 #3 — max point swing each precedent signal can add to a candidate's score.
+# Guidance weights are in [0, 1]; the actual boost is weight * the cap below.
+_PREFER_NAT_MAX = 10.0    # nationality matched a prior signed-on placement
+_PREFER_GRADE_MAX = 4.0   # grade matched a prior signed-on placement
+_AVOID_NAT_MAX = 12.0     # nationality matched a prior rejected placement (subtracted)
+
 
 class CrewMatchingAgent(BaseAgent):
     def __init__(self, event_callback=None):
@@ -78,6 +84,13 @@ class CrewMatchingAgent(BaseAgent):
         )
         # Loaded lazily from Postgres on first use (can't await in __init__).
         self._all_crew: List[Dict[str, Any]] = None
+        # L4 #3 — precedent guidance injected per workflow before ranking (see
+        # PrecedentService.derive_guidance). None/has_precedent=False ⇒ no boost.
+        self._precedent_guidance: Dict[str, Any] = None
+
+    def set_precedent_guidance(self, guidance: Dict[str, Any]) -> None:
+        """Inject the precedent-derived re-rank guidance for this workflow (L4 #3)."""
+        self._precedent_guidance = guidance or None
 
     async def _ensure_crew_loaded(self) -> None:
         if self._all_crew is None:
@@ -200,7 +213,14 @@ class CrewMatchingAgent(BaseAgent):
 
             # Small random variation to simulate real-world scoring
             score += random.uniform(-2, 2)
-            score = max(0, min(100, score))
+            base_score = round(max(0, min(100, score)), 1)
+
+            # L4 #3 — precedent boost: bias toward profiles that previously signed
+            # on cleanly, away from ones that were rejected. base_score already
+            # carries the jitter, so the boost is the ONLY difference (lift == boost).
+            boost, boost_reasons = self._precedent_boost(crew)
+            adjusted = round(max(0, min(100, base_score + boost)), 1)
+            reasons.extend(boost_reasons)
 
             ranked.append({
                 "crew_id": cid,
@@ -209,12 +229,75 @@ class CrewMatchingAgent(BaseAgent):
                 "grade": crew["grade"],
                 "port": crew["port"],
                 "nationality": crew["nationality"],
-                "confidence_score": round(score, 1),
+                "confidence_score": adjusted,
+                "base_confidence_score": base_score,
+                "precedent_boost": round(boost, 1),
                 "match_reasons": reasons,
             })
 
+        # Adjusted order is what we return; capture the base-order winner too so we
+        # can tell whether precedent actually changed the selection.
+        base_winner = max(ranked, key=lambda x: x["base_confidence_score"], default=None)
         ranked.sort(key=lambda x: x["confidence_score"], reverse=True)
-        return {"ranked_candidates": ranked[:5]}
+        feedback = self._build_precedent_feedback(ranked, base_winner)
+        return {"ranked_candidates": ranked[:5], "precedent_feedback": feedback}
+
+    def _precedent_boost(self, crew: Dict[str, Any]) -> tuple:
+        """Point boost (+/-) for one candidate from the injected precedent guidance,
+        plus any human-readable reasons. Returns (0.0, []) when there's no guidance."""
+        g = self._precedent_guidance or {}
+        if not g.get("has_precedent"):
+            return 0.0, []
+        nat = (crew.get("nationality") or "")
+        grade = (crew.get("grade") or "")
+        boost = 0.0
+        reasons: List[str] = []
+        prefer_nat = g.get("prefer_nationalities") or {}
+        avoid_nat = g.get("avoid_nationalities") or {}
+        prefer_grade = g.get("prefer_grades") or {}
+        if nat in prefer_nat:
+            boost += prefer_nat[nat] * _PREFER_NAT_MAX
+            reasons.append(f"Precedent: {nat} nationals cleared this vacancy before")
+        if nat in avoid_nat:
+            boost -= avoid_nat[nat] * _AVOID_NAT_MAX
+            reasons.append(f"Precedent: {nat} was rejected for this vacancy before")
+        if grade in prefer_grade:
+            boost += prefer_grade[grade] * _PREFER_GRADE_MAX
+        return boost, reasons
+
+    def _build_precedent_feedback(
+        self, ranked: List[Dict[str, Any]], base_winner: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Summarize how the precedent boost re-ranked this query (L4 #3 measurement)."""
+        g = self._precedent_guidance or {}
+        applied = bool(g.get("has_precedent")) and any(c.get("precedent_boost") for c in ranked)
+        if not applied or not ranked:
+            return {"applied": False}
+        adj_winner = ranked[0]
+        top_base = adj_winner.get("base_confidence_score", adj_winner["confidence_score"])
+        top_adjusted = adj_winner["confidence_score"]
+        reranked = bool(base_winner) and base_winner["crew_id"] != adj_winner["crew_id"]
+        boosted = [
+            {
+                "crew_id": c["crew_id"], "name": c["name"],
+                "nationality": c.get("nationality"), "boost": c.get("precedent_boost", 0.0),
+            }
+            for c in ranked if c.get("precedent_boost")
+        ]
+        return {
+            "applied": True,
+            "top_base_score": top_base,
+            "top_adjusted_score": top_adjusted,
+            "lift": round(top_adjusted - top_base, 1),
+            "reranked": reranked,
+            "base_winner": (
+                {"crew_id": base_winner["crew_id"], "name": base_winner["name"]}
+                if base_winner else None
+            ),
+            "adjusted_winner": {"crew_id": adj_winner["crew_id"], "name": adj_winner["name"]},
+            "boosted": boosted,
+            "rationale": g.get("rationale"),
+        }
 
     def _get_crew_profile(self, params: Dict[str, Any]) -> Dict[str, Any]:
         crew_id = params.get("crew_id", "")
@@ -231,6 +314,7 @@ class CrewMatchingAgent(BaseAgent):
         # Extract the best match from tool call history
         ranked_result = None
         top_candidate = None
+        precedent_feedback = None
 
         for tc in self.execution.tool_calls:
             if tc.tool_name == "rankCrew" and tc.output:
@@ -239,6 +323,9 @@ class CrewMatchingAgent(BaseAgent):
                 if candidates:
                     ranked_result = candidates
                     top_candidate = candidates[0]
+                # L4 #3 — carry the re-rank measurement up to the workflow/decision.
+                if output.get("precedent_feedback"):
+                    precedent_feedback = output["precedent_feedback"]
 
         if not top_candidate:
             # Fallback
@@ -258,4 +345,5 @@ class CrewMatchingAgent(BaseAgent):
             "ranked_candidates": ranked_result or [top_candidate],
             "summary": raw_text[:500] if raw_text else "Crew matching completed.",
             "confidence_score": top_candidate.get("confidence_score", 75.0),
+            "precedent_feedback": precedent_feedback,
         }

@@ -104,6 +104,9 @@ class PrecedentService:
                 "chosen_crew_id": chosen.get("crew_id"),
                 "chosen_crew_name": chosen.get("name"),
                 "chosen_crew_rank": chosen.get("rank"),
+                # Chosen crew's own profile — the key the L4 #3 re-rank boosts on.
+                "chosen_crew_nationality": chosen.get("nationality"),
+                "chosen_crew_grade": chosen.get("grade"),
                 "confidence_score": decision.get("confidence_score"),
                 "outcome_status": status,
                 "compliance_status": decision.get("compliance_status"),
@@ -115,6 +118,81 @@ class PrecedentService:
         except Exception:
             log.warning("precedent.record.failed", exc_info=True)
             return None
+
+    # ── Feedback into L3 (#3) ───────────────────────────────────────────────────
+
+    def derive_guidance(self, precedent: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """Turn a consult() result into a compact scorer-facing profile (L4 #3).
+
+        For each prior placement of this vacancy profile: a signed_on outcome makes
+        its chosen crew's nationality/grade PREFERRED (weighted by how cleanly it
+        cleared compliance); a rejected outcome makes that nationality AVOIDED. The
+        Crew Matching scorer reads this to boost/penalize candidates accordingly.
+
+        Weights are normalized to [0, 1] — the scorer maps them onto a point boost.
+        Returns has_precedent=False (everything empty) when there's nothing to learn
+        from, so first-time vacancies are a no-op. Never raises.
+        """
+        guidance: Dict[str, Any] = {
+            "has_precedent": False,
+            "prefer_nationalities": {},
+            "avoid_nationalities": {},
+            "prefer_grades": {},
+            "rationale": None,
+            "summary": (precedent or {}).get("summary"),
+        }
+        try:
+            matches = (precedent or {}).get("matches") or []
+            if not matches:
+                return guidance
+            prefer_nat: Dict[str, float] = {}
+            avoid_nat: Dict[str, float] = {}
+            prefer_grade: Dict[str, float] = {}
+            signed_examples: List[str] = []
+            for m in matches:
+                nat = m.get("chosen_crew_nationality")
+                grade = m.get("chosen_crew_grade")
+                outcome = m.get("outcome_status")
+                score = m.get("compliance_score")
+                if outcome == "signed_on":
+                    w = round((score if score is not None else 85.0) / 100.0, 3)
+                    if nat:
+                        prefer_nat[nat] = max(prefer_nat.get(nat, 0.0), w)
+                    if grade:
+                        prefer_grade[grade] = max(prefer_grade.get(grade, 0.0), w)
+                    name = m.get("chosen_crew_name") or m.get("chosen_crew_id") or "prior crew"
+                    detail = f"{name}"
+                    if nat:
+                        detail += f" ({nat}"
+                        detail += f", {grade})" if grade else ")"
+                    if score is not None:
+                        detail += f" cleared at {score:.0f}%"
+                    signed_examples.append(detail)
+                elif outcome == "rejected":
+                    # Penalty scaled by how badly it failed (low compliance → stronger avoid).
+                    w = round(1.0 - (score if score is not None else 40.0) / 100.0, 3)
+                    if nat:
+                        avoid_nat[nat] = max(avoid_nat.get(nat, 0.0), max(w, 0.2))
+            # A nationality that both signed on AND was rejected before: prefer wins
+            # (a confirmed success outweighs a single failure for the same profile).
+            for nat in list(avoid_nat):
+                if nat in prefer_nat:
+                    avoid_nat.pop(nat, None)
+            has = bool(prefer_nat or avoid_nat or prefer_grade)
+            guidance.update({
+                "has_precedent": has,
+                "prefer_nationalities": prefer_nat,
+                "avoid_nationalities": avoid_nat,
+                "prefer_grades": prefer_grade,
+                "rationale": (
+                    "Prior signed-on: " + "; ".join(signed_examples)
+                    if signed_examples
+                    else ("Prior placements for this profile were rejected" if avoid_nat else None)
+                ),
+            })
+        except Exception:
+            log.warning("precedent.derive_guidance.failed", exc_info=True)
+        return guidance
 
     # ── helpers ───────────────────────────────────────────────────────────────
 

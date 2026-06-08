@@ -37,12 +37,19 @@ async def update_outcome_by_workflow(
     compliance_status: Optional[str] = None,
     compliance_score: Optional[float] = None,
     outcome_reasons: Optional[list] = None,
+    attempts: Optional[list] = None,
+    chosen_crew: Optional[dict] = None,
+    chosen_crew_id: Optional[str] = None,
 ) -> Optional[dict]:
     """Stamp the outcome on the decision produced by this workflow.
 
     Decisions are keyed by workflow_id from the compliance gate (which only knows
     the workflow, not the decision_id). Updates the most recent matching row.
     Returns the updated row, or None if no decision was captured for the workflow.
+
+    L4 #4 — `attempts` records the rejection-retry journey, and `chosen_crew(_id)`
+    overrides the captured top match when a FALLBACK candidate is the one that
+    signed on. Resolving the outcome clears `pending_reason`.
     """
     async with AsyncSessionLocal() as session:
         row = (
@@ -61,6 +68,13 @@ async def update_outcome_by_workflow(
             row.compliance_score = compliance_score
         if outcome_reasons is not None:
             row.outcome_reasons = outcome_reasons
+        if attempts is not None:
+            row.attempts = attempts
+        if chosen_crew is not None:
+            row.chosen_crew = chosen_crew
+        if chosen_crew_id is not None:
+            row.chosen_crew_id = chosen_crew_id
+        row.pending_reason = None  # resolved — no longer pending
         row.resolved_at = datetime.utcnow()
         await session.commit()
         return row.to_dict()

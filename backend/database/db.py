@@ -39,6 +39,15 @@ async def init_db() -> None:
     migrations = (
         "ALTER TABLE decision_traces ADD COLUMN IF NOT EXISTS is_repeat_query BOOLEAN DEFAULT FALSE",
         "ALTER TABLE decision_traces ADD COLUMN IF NOT EXISTS consulted_precedents JSON",
+        # L4 #3 — precedent feedback into L3 (re-rank measurement on the trace; the
+        # chosen crew's profile on precedent rows is what the boost keys on).
+        "ALTER TABLE decision_traces ADD COLUMN IF NOT EXISTS precedent_feedback JSON",
+        "ALTER TABLE placement_precedents ADD COLUMN IF NOT EXISTS chosen_crew_nationality VARCHAR",
+        "ALTER TABLE placement_precedents ADD COLUMN IF NOT EXISTS chosen_crew_grade VARCHAR",
+        # L4 #4 — rejection-retry loop: the per-candidate attempt journey + a
+        # human reason for a still-pending decision.
+        "ALTER TABLE decision_traces ADD COLUMN IF NOT EXISTS attempts JSON",
+        "ALTER TABLE decision_traces ADD COLUMN IF NOT EXISTS pending_reason VARCHAR",
     )
     try:
         async with engine.begin() as conn:

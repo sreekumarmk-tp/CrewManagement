@@ -338,6 +338,9 @@ export interface DecisionAlternative {
   name: string;
   rank?: string;
   confidence_score: number;
+  // L4 #3 — base score before the precedent boost, and the boost applied.
+  base_confidence_score?: number;
+  precedent_boost?: number;
   match_reasons?: string[];
 }
 
@@ -354,6 +357,8 @@ export interface PlacementPrecedent {
   chosen_crew_id?: string;
   chosen_crew_name?: string;
   chosen_crew_rank?: string;
+  chosen_crew_nationality?: string;
+  chosen_crew_grade?: string;
   confidence_score?: number;
   outcome_status?: string;
   compliance_status?: string;
@@ -376,6 +381,42 @@ export interface PrecedentConsultation {
   consulted_at?: string;
 }
 
+// ─── Precedent feedback into L3 (L4 #3) ────────────────────────────────────────
+// How the consulted precedent re-ranked the matching query. `applied` is false for
+// first-time vacancies (no boost) — the UI then renders nothing.
+export interface PrecedentFeedbackBoost {
+  crew_id: string;
+  name?: string;
+  nationality?: string;
+  boost: number;
+}
+
+export interface PrecedentFeedback {
+  applied: boolean;
+  top_base_score?: number;
+  top_adjusted_score?: number;
+  lift?: number;
+  reranked?: boolean;
+  base_winner?: { crew_id: string; name?: string } | null;
+  adjusted_winner?: { crew_id: string; name?: string };
+  boosted?: PrecedentFeedbackBoost[];
+  rationale?: string | null;
+}
+
+// ─── Rejection-retry loop (L4 #4) ──────────────────────────────────────────────
+// One compliance attempt within a sign-off. The retry loop tries ranked candidates
+// in order until one passes (or they're exhausted).
+export interface ComplianceAttempt {
+  order: number;
+  crew_id: string;
+  name?: string;
+  rank?: string;
+  compliance_status?: string;   // passed | warning | failed
+  compliance_score?: number | null;
+  failures?: string[];
+  warnings?: string[];
+}
+
 export interface DecisionTrace {
   decision_id: string;
   workflow_id: string;
@@ -394,10 +435,13 @@ export interface DecisionTrace {
   trajectory: DecisionTrajectoryStep[];
   is_repeat_query?: boolean;
   consulted_precedents?: PrecedentConsultation | null;
+  precedent_feedback?: PrecedentFeedback | null;
   outcome_status: DecisionOutcomeStatus;
   compliance_status?: string;
   compliance_score?: number;
   outcome_reasons: string[];
+  attempts?: ComplianceAttempt[];
+  pending_reason?: string | null;
   session_id?: string;
   total_tokens: number;
   total_cost: number;

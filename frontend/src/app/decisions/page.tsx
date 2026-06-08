@@ -16,7 +16,7 @@ import toast, { Toaster } from "react-hot-toast";
 import {
   Anchor, Ship, Activity, BarChart3, GitBranch, Wifi, WifiOff,
   RefreshCw, Sparkles, CheckCircle, XCircle, Clock, ChevronRight, Cpu, Wrench,
-  Play, Square,
+  Play, Square, AlertTriangle, RotateCcw,
 } from "lucide-react";
 
 import { decisionApi } from "@/lib/api";
@@ -24,7 +24,7 @@ import { useWebSocket } from "@/hooks/useWebSocket";
 import { useWorkflowStore } from "@/store/workflowStore";
 import DecisionGraph from "@/components/decisions/DecisionGraph";
 import PrecedentPanel from "@/components/decisions/PrecedentPanel";
-import type { DecisionTrace, DecisionTrajectoryStep } from "@/types";
+import type { DecisionTrace, DecisionTrajectoryStep, ComplianceAttempt } from "@/types";
 
 // How long each decision stays on screen during the auto-play walkthrough.
 const DEMO_STEP_MS = 5500;
@@ -386,6 +386,14 @@ function TrajectoryTrace({ decision }: { decision: DecisionTrace }) {
         <span className="text-[10px] text-gray-500">({decision.trajectory.length} steps)</span>
       </h3>
 
+      {/* L4 #4 — why this decision is still pending. */}
+      {decision.outcome_status === "pending" && <PendingBanner decision={decision} />}
+
+      {/* L4 #4 — the rejection-retry journey: each candidate compliance was run against. */}
+      {decision.attempts && decision.attempts.length > 0 && (
+        <ComplianceAttempts attempts={decision.attempts} />
+      )}
+
       {/* Reasons + outcome reasons */}
       {decision.match_reasons?.length > 0 && (
         <div className="mb-3">
@@ -416,6 +424,89 @@ function TrajectoryTrace({ decision }: { decision: DecisionTrace }) {
           <p className="text-xs text-gray-500">No trajectory steps recorded.</p>
         )}
         {decision.trajectory.map((step, i) => <TrajectoryStep key={i} step={step} />)}
+      </div>
+    </div>
+  );
+}
+
+function PendingBanner({ decision }: { decision: DecisionTrace }) {
+  const reason =
+    decision.pending_reason ||
+    "Awaiting the compliance gate — the matched candidate has not yet been validated, so the placement outcome is still open.";
+  return (
+    <div className="mb-3 flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/5 px-3 py-2.5">
+      <Clock className="w-4 h-4 text-amber-400 mt-0.5 shrink-0" />
+      <div>
+        <p className="text-xs font-semibold text-amber-200">Why this is pending</p>
+        <p className="text-[11px] text-gray-300 mt-0.5">{reason}</p>
+      </div>
+    </div>
+  );
+}
+
+const ATTEMPT_STYLE: Record<string, { color: string; icon: React.ReactNode; label: string }> = {
+  passed: { color: "#22c55e", icon: <CheckCircle className="w-3.5 h-3.5" />, label: "Passed" },
+  warning: { color: "#f59e0b", icon: <AlertTriangle className="w-3.5 h-3.5" />, label: "Warning" },
+  failed: { color: "#ef4444", icon: <XCircle className="w-3.5 h-3.5" />, label: "Failed" },
+};
+
+function ComplianceAttempts({ attempts }: { attempts: ComplianceAttempt[] }) {
+  return (
+    <div className="mb-3">
+      <p className="text-[10px] uppercase tracking-wider text-gray-500 mb-1.5 flex items-center gap-1.5">
+        <RotateCcw className="w-3 h-3" /> Compliance attempts
+        {attempts.length > 1 && (
+          <span className="text-ocean-accent normal-case tracking-normal">
+            · retried {attempts.length - 1}×
+          </span>
+        )}
+      </p>
+      <div className="space-y-1.5">
+        {attempts.map((a, idx) => {
+          const s = ATTEMPT_STYLE[a.compliance_status || ""] || ATTEMPT_STYLE.failed;
+          const reasons = (a.compliance_status === "failed" ? a.failures : a.warnings) || [];
+          const failed = a.compliance_status === "failed";
+          const hasNext = idx < attempts.length - 1;
+          return (
+            <div key={`${a.order}-${a.crew_id}`}>
+              <div className="rounded-lg border border-ocean-border/40 px-2.5 py-1.5">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="text-[10px] text-gray-500 font-mono shrink-0">#{a.order}</span>
+                    <span className="text-xs text-white truncate">{a.name || a.crew_id}</span>
+                    {a.rank && <span className="text-[10px] text-gray-500 truncate">{a.rank}</span>}
+                  </div>
+                  <div className="flex items-center gap-1.5 shrink-0" style={{ color: s.color }}>
+                    {a.compliance_score != null && (
+                      <span className="text-[10px] text-gray-400">{a.compliance_score}%</span>
+                    )}
+                    <span className="flex items-center gap-1 text-[10px] font-semibold">{s.icon} {s.label}</span>
+                  </div>
+                </div>
+                {reasons.length > 0 && (
+                  <div className="flex flex-wrap gap-1 mt-1 pl-6">
+                    {reasons.map((r, i) => (
+                      <span
+                        key={i}
+                        className="text-[10px] px-1.5 py-0.5 rounded"
+                        style={{ color: s.color, background: `${s.color}12`, border: `1px solid ${s.color}30` }}
+                      >
+                        {r}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+              {/* Name the feedback: a rejection routes back to L3, which selects the next candidate. */}
+              {failed && hasNext && (
+                <div className="flex items-center gap-1.5 pl-3 py-0.5 text-[10px] text-red-300/80">
+                  <RotateCcw className="w-3 h-3" />
+                  rejected → feedback to L3 → selecting next-best candidate
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
     </div>
   );

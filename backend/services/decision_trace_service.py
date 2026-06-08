@@ -98,9 +98,16 @@ class DecisionTraceService:
         compliance_status: Optional[str] = None,
         compliance_score: Optional[float] = None,
         outcome_reasons: Optional[list] = None,
+        attempts: Optional[list] = None,
+        chosen_crew: Optional[dict] = None,
+        chosen_crew_id: Optional[str] = None,
         broadcast: Optional[Broadcast] = None,
     ) -> Optional[dict]:
-        """Stamp the outcome (signed_on | rejected) on the workflow's decision. Never raises."""
+        """Stamp the outcome (signed_on | rejected) on the workflow's decision. Never raises.
+
+        L4 #4 — `attempts` is the rejection-retry journey; `chosen_crew(_id)` overrides
+        the captured top match when a fallback candidate is the one that signed on.
+        """
         try:
             updated = await update_outcome_by_workflow(
                 workflow_id,
@@ -108,6 +115,9 @@ class DecisionTraceService:
                 compliance_status=compliance_status,
                 compliance_score=compliance_score,
                 outcome_reasons=outcome_reasons,
+                attempts=attempts,
+                chosen_crew=chosen_crew,
+                chosen_crew_id=chosen_crew_id,
             )
             if updated is None:
                 log.info("decision.outcome.no_decision", workflow_id=workflow_id)
@@ -183,6 +193,14 @@ class DecisionTraceService:
             "trajectory": self._flatten_trajectory(workflow),
             "is_repeat_query": bool(precedent.get("is_repeat")),
             "consulted_precedents": precedent or None,
+            # L4 #3 — how the consulted precedent re-ranked the match (None for a
+            # first-time vacancy, where no boost was applied).
+            "precedent_feedback": match_result.get("precedent_feedback"),
+            "attempts": [],
+            "pending_reason": (
+                "Awaiting compliance validation — the matched candidate has not yet "
+                "been run through the compliance gate."
+            ),
             "outcome_status": "pending",
             "session_id": workflow.session_id,
             "total_tokens": workflow.total_tokens,
@@ -267,6 +285,9 @@ class DecisionTraceService:
             "trajectory": spec["trajectory"],
             "is_repeat_query": bool(precedent.get("is_repeat")),
             "consulted_precedents": precedent or None,
+            "precedent_feedback": spec.get("precedent_feedback"),
+            "attempts": spec.get("attempts", []),
+            "pending_reason": spec.get("pending_reason") if spec["outcome_status"] == "pending" else None,
             "outcome_status": spec["outcome_status"],
             "compliance_status": spec.get("compliance_status"),
             "compliance_score": spec.get("compliance_score"),
@@ -336,32 +357,46 @@ _DEMO_DECISIONS: List[Dict[str, Any]] = [
         "outcome_status": "rejected",
         "compliance_status": "failed",
         "compliance_score": 41.0,
-        "outcome_reasons": ["Visa invalid for Rotterdam", "STCW certificate expired"],
+        # Rejection-retry loop (#4): the top match failed, the loop tried the next-best
+        # candidate, and that one failed too — alternatives exhausted → final rejection.
+        "attempts": [
+            {"order": 1, "crew_id": "CM-2301", "name": "Diego Cruz", "rank": "Second Engineer", "compliance_status": "failed", "compliance_score": 41.0, "failures": ["Visa invalid for Rotterdam", "STCW certificate expired"], "warnings": []},
+            {"order": 2, "crew_id": "CM-2355", "name": "Tom Baker", "rank": "Second Engineer", "compliance_status": "failed", "compliance_score": 49.0, "failures": ["Medical certificate expired"], "warnings": []},
+        ],
+        "outcome_reasons": ["All 2 candidates failed compliance — alternatives exhausted", "Visa invalid for Rotterdam", "STCW certificate expired"],
         "total_tokens": 15200,
         "total_cost": 0.176,
         "cache_read_tokens": 9000,
         "cache_creation_tokens": 2800,
     },
     {
+        # Success-after-retry (#4): the top match (Sergey Volkov, 88.1) FAILED
+        # compliance, so the loop retried the next-best candidate (John Adams, 83.2)
+        # — who cleared with a warning and was signed on. The chosen crew is therefore
+        # the lower-confidence fallback; the attempts journey explains why.
         "trigger": "Sign-off initiated for Liam O'Brien (CM-1190)",
         "departing": {
             "crew_id": "CM-1190", "name": "Liam O'Brien", "rank": "Master",
             "grade": "A", "vessel": "MV Northern Light", "port": "Houston", "nationality": "Irish",
         },
         "chosen": {
-            "crew_id": "CM-2410", "name": "Sergey Volkov", "rank": "Master",
-            "grade": "A", "port": "Houston", "nationality": "Russian",
+            "crew_id": "CM-2455", "name": "John Adams", "rank": "Master",
+            "grade": "A", "port": "Houston", "nationality": "American",
         },
-        "confidence": 88.1,
-        "match_reasons": ["Exact rank match", "Grade matches", "Same port: Houston", "18 years experience"],
+        "confidence": 83.2,
+        "match_reasons": ["Exact rank match", "Grade matches", "Same port: Houston", "Signed on after top candidate failed compliance"],
         "alternatives": [
-            {"crew_id": "CM-2455", "name": "John Adams", "rank": "Master", "confidence_score": 83.2, "match_reasons": ["Exact rank match", "Grade matches"]},
+            {"crew_id": "CM-2410", "name": "Sergey Volkov", "rank": "Master", "confidence_score": 88.1, "match_reasons": ["Exact rank match", "Grade matches", "18 years experience"]},
             {"crew_id": "CM-2478", "name": "Yusuf Demir", "rank": "Master", "confidence_score": 76.0, "match_reasons": ["Exact rank match"]},
         ],
         "trajectory": [
             {"kind": "agent", "agent_name": "Crew Matching Agent", "agent_type": "crew_matching", "status": "completed", "confidence_score": 0.881, "tokens_used": 0, "duration_ms": 4500},
             {"kind": "tool", "agent_name": "Crew Matching Agent", "tool_name": "searchCrew", "input": '{"rank": "Master", "port": "Houston"}', "output": '{"found": 3}', "duration_ms": 130, "timestamp": None},
-            {"kind": "tool", "agent_name": "Crew Matching Agent", "tool_name": "rankCrew", "input": '{"candidates": ["CM-2410", "CM-2455", "CM-2478"]}', "output": '{"ranked_candidates": [{"crew_id": "CM-2410", "confidence_score": 88.1}]}', "duration_ms": 102, "timestamp": None},
+            {"kind": "tool", "agent_name": "Crew Matching Agent", "tool_name": "rankCrew", "input": '{"candidates": ["CM-2410", "CM-2455", "CM-2478"]}', "output": '{"ranked_candidates": [{"crew_id": "CM-2410", "confidence_score": 88.1}, {"crew_id": "CM-2455", "confidence_score": 83.2}]}', "duration_ms": 102, "timestamp": None},
+        ],
+        "attempts": [
+            {"order": 1, "crew_id": "CM-2410", "name": "Sergey Volkov", "rank": "Master", "compliance_status": "failed", "compliance_score": 38.0, "failures": ["US visa expired", "Port restriction: Houston requires valid C1/D visa"], "warnings": []},
+            {"order": 2, "crew_id": "CM-2455", "name": "John Adams", "rank": "Master", "compliance_status": "warning", "compliance_score": 84.0, "failures": [], "warnings": ["Medical certificate expires in 45 days — renew before next port"]},
         ],
         "outcome_status": "signed_on",
         "compliance_status": "warning",
@@ -392,6 +427,10 @@ _DEMO_DECISIONS: List[Dict[str, Any]] = [
             {"kind": "tool", "agent_name": "Crew Matching Agent", "tool_name": "searchCrew", "input": '{"rank": "Bosun", "port": "Shanghai"}', "output": '{"found": 2}', "duration_ms": 105, "timestamp": None},
         ],
         "outcome_status": "pending",
+        "pending_reason": (
+            "Sign-on not yet confirmed — Kwame Asante was matched but the compliance "
+            "gate has not been run, so the placement outcome is still open."
+        ),
         "total_tokens": 12100,
         "total_cost": 0.142,
         "cache_read_tokens": 7000,
@@ -428,27 +467,45 @@ _DEMO_DECISIONS: List[Dict[str, Any]] = [
     },
     {
         # Repeat of decision #1's vacancy profile (Chief Officer @ Singapore) — so
-        # this one consults the Precedent Index and finds Rajesh Kumar's prior
-        # placement: it's the 2nd query for this profile.
+        # this one consults the Precedent Index and finds Arjun Menon's prior
+        # signed-on placement (Indian, 98%). L4 #3: that precedent is fed back into
+        # the matching scorer, which boosts the Indian candidate ABOVE the Russian
+        # one that led on the base score — re-ranking the winner.
         "trigger": "Sign-off initiated for Nikolai Petrov (CM-1377)",
         "departing": {
             "crew_id": "CM-1377", "name": "Nikolai Petrov", "rank": "Chief Officer",
             "grade": "A", "vessel": "MV Pacific Dawn", "port": "Singapore", "nationality": "Russian",
         },
         "chosen": {
-            "crew_id": "CM-2733", "name": "Aleksei Ivanov", "rank": "Chief Officer",
-            "grade": "A", "port": "Singapore", "nationality": "Russian",
+            "crew_id": "CM-2733", "name": "Rohan Nair", "rank": "Chief Officer",
+            "grade": "A", "port": "Singapore", "nationality": "Indian",
         },
-        "confidence": 90.2,
-        "match_reasons": ["Exact rank match", "Grade matches", "Same port: Singapore", "15 years experience"],
+        "confidence": 93.8,
+        "match_reasons": [
+            "Exact rank match", "Grade matches", "Same port: Singapore",
+            "Precedent: Indian nationals cleared this vacancy before",
+        ],
         "alternatives": [
-            {"crew_id": "CM-2780", "name": "Marco Bianchi", "rank": "Chief Officer", "confidence_score": 82.7, "match_reasons": ["Exact rank match", "Grade matches"]},
+            {"crew_id": "CM-2780", "name": "Aleksei Ivanov", "rank": "Chief Officer", "confidence_score": 84.0, "base_confidence_score": 84.0, "precedent_boost": 0.0, "match_reasons": ["Exact rank match", "Grade matches"]},
         ],
         "trajectory": [
-            {"kind": "agent", "agent_name": "Crew Matching Agent", "agent_type": "crew_matching", "status": "completed", "confidence_score": 0.902, "tokens_used": 0, "duration_ms": 4000},
+            {"kind": "agent", "agent_name": "Crew Matching Agent", "agent_type": "crew_matching", "status": "completed", "confidence_score": 0.938, "tokens_used": 0, "duration_ms": 4000},
             {"kind": "tool", "agent_name": "Crew Matching Agent", "tool_name": "searchCrew", "input": '{"rank": "Chief Officer", "port": "Singapore"}', "output": '{"found": 4}', "duration_ms": 115, "timestamp": None},
-            {"kind": "tool", "agent_name": "Crew Matching Agent", "tool_name": "rankCrew", "input": '{"candidates": ["CM-2733", "CM-2780"]}', "output": '{"ranked_candidates": [{"crew_id": "CM-2733", "confidence_score": 90.2}]}', "duration_ms": 98, "timestamp": None},
+            {"kind": "tool", "agent_name": "Crew Matching Agent", "tool_name": "rankCrew", "input": '{"candidates": ["CM-2733", "CM-2780"]}', "output": '{"ranked_candidates": [{"crew_id": "CM-2733", "confidence_score": 93.8}], "precedent_feedback": {"applied": true, "reranked": true}}', "duration_ms": 98, "timestamp": None},
         ],
+        "precedent_feedback": {
+            "applied": True,
+            "top_base_score": 84.0,
+            "top_adjusted_score": 93.8,
+            "lift": 9.8,
+            "reranked": True,
+            "base_winner": {"crew_id": "CM-2780", "name": "Aleksei Ivanov"},
+            "adjusted_winner": {"crew_id": "CM-2733", "name": "Rohan Nair"},
+            "boosted": [
+                {"crew_id": "CM-2733", "name": "Rohan Nair", "nationality": "Indian", "boost": 9.8},
+            ],
+            "rationale": "Prior signed-on: Arjun Menon (Indian, A) cleared at 98%",
+        },
         "outcome_status": "signed_on",
         "compliance_status": "passed",
         "compliance_score": 97.0,

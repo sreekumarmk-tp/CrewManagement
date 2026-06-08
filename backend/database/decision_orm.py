@@ -47,11 +47,20 @@ class DecisionTrace(Base):
     is_repeat_query = Column(Boolean, default=False)
     consulted_precedents = Column(JSON, nullable=True)      # {is_repeat, matches, summary, query}
 
+    # ── Precedent feedback into L3 (L4 #3) — how the consulted precedent re-ranked
+    # the match. NULL/applied=False for first-time vacancies (no precedent boost).
+    precedent_feedback = Column(JSON, nullable=True)        # {applied, lift, reranked, boosted, rationale}
+
     # ── The outcome (NULL at capture; filled at the compliance gate) ───────────
     outcome_status = Column(String, default="pending")      # pending | signed_on | rejected
     compliance_status = Column(String, nullable=True)       # passed | warning | failed
     compliance_score = Column(Float, nullable=True)
     outcome_reasons = Column(JSON, nullable=True)           # warnings (conditional) or failures
+    # ── Rejection-retry loop (L4 #4) — each candidate Compliance was run against,
+    # in order, until one passed (or the alternatives were exhausted). pending_reason
+    # explains a still-pending decision; cleared once the outcome is stamped.
+    attempts = Column(JSON, nullable=True)                  # [{order, crew_id, name, compliance_status, ...}]
+    pending_reason = Column(String, nullable=True)
 
     # ── Decision metadata (cost of reaching it) ────────────────────────────────
     session_id = Column(String, nullable=True)
@@ -76,10 +85,13 @@ class DecisionTrace(Base):
             "trajectory": self.trajectory or [],
             "is_repeat_query": bool(self.is_repeat_query),
             "consulted_precedents": self.consulted_precedents,
+            "precedent_feedback": self.precedent_feedback,
             "outcome_status": self.outcome_status,
             "compliance_status": self.compliance_status,
             "compliance_score": self.compliance_score,
             "outcome_reasons": self.outcome_reasons or [],
+            "attempts": self.attempts or [],
+            "pending_reason": self.pending_reason,
             "session_id": self.session_id,
             "total_tokens": self.total_tokens or 0,
             "total_cost": round(self.total_cost or 0.0, 6),

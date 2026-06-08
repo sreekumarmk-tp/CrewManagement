@@ -35,6 +35,11 @@ class PlacementPrecedent(Base):
     chosen_crew_id = Column(String)
     chosen_crew_name = Column(String)
     chosen_crew_rank = Column(String)
+    # Chosen crew's own profile — the LOOKUP RESULT the L4 #3 feedback loop keys
+    # on: a repeat vacancy boosts candidates matching the nationality/grade that
+    # previously signed on cleanly (and penalizes ones that were rejected).
+    chosen_crew_nationality = Column(String)
+    chosen_crew_grade = Column(String)
     confidence_score = Column(Float)
     outcome_status = Column(String)        # signed_on | rejected
     compliance_status = Column(String)
@@ -53,6 +58,8 @@ class PlacementPrecedent(Base):
             "chosen_crew_id": self.chosen_crew_id,
             "chosen_crew_name": self.chosen_crew_name,
             "chosen_crew_rank": self.chosen_crew_rank,
+            "chosen_crew_nationality": self.chosen_crew_nationality,
+            "chosen_crew_grade": self.chosen_crew_grade,
             "confidence_score": self.confidence_score,
             "outcome_status": self.outcome_status,
             "compliance_status": self.compliance_status,
