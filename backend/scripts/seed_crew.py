@@ -51,6 +51,19 @@ async def seed() -> None:
         session.add_all([_to_row(c, "signoff") for c in sign_off])
         await session.commit()
 
+    # Invalidate the Redis crew-list cache so a RUNNING backend serves the freshly
+    # seeded pool immediately (the table is dropped/recreated above, which bypasses
+    # the cache-aside invalidation in update_crew). Without this, a re-seed appears
+    # to "not take" until the cache TTL expires.
+    try:
+        from database.crew_repository import _SIGNON_KEY, _SIGNOFF_KEY
+        from services.cache_service import cache_service
+        await cache_service.delete(_SIGNON_KEY, _SIGNOFF_KEY)
+        await cache_service.close()
+        print("Invalidated crew cache (crew:signon, crew:signoff).")
+    except Exception as exc:  # noqa: BLE001 - cache is optional; seeding still succeeded
+        print(f"(crew cache not invalidated: {exc})")
+
     print(f"Seeded {len(sign_on)} sign-on + {len(sign_off)} sign-off crew into Postgres.")
 
 

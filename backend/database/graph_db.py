@@ -63,9 +63,26 @@ async def run_cypher(query: str) -> List[Dict[str, Any]]:
     """
     if not age_enabled():
         return []
-    sql = text(f"SELECT * FROM cypher('{GRAPH_NAME}', $$ {query} $$) AS (v agtype);")
+    # NOTE: use exec_driver_sql, NOT text(): Cypher is full of ':Label' / ':REL_TYPE'
+    # colons, which SQLAlchemy's text() parses as bind parameters and then rejects
+    # ("A value is required for bind parameter 'RESTRICTS'"). exec_driver_sql passes the
+    # statement straight to the driver with no bind-param parsing.
+    sql = f"SELECT * FROM cypher('{GRAPH_NAME}', $$ {query} $$) AS (v agtype);"
     async with AsyncSessionLocal() as session:
-        rows = (await session.execute(sql)).fetchall()
+        conn = await session.connection()
+        # Load AGE + set the search_path on THIS connection, every call. The connect-event
+        # hook (_load_age) is best-effort and silently no-ops on any connection where it
+        # didn't fire (pool churn / reset), leaving cypher() off the search_path →
+        # "No function matches the given name". Doing it here makes each call self-sufficient
+        # and idempotent (LOAD is cheap once the extension is loaded in the session).
+        await conn.exec_driver_sql("LOAD 'age';")
+        await conn.exec_driver_sql('SET search_path = ag_catalog, "$user", public;')
+        rows = (await conn.exec_driver_sql(sql)).fetchall()
+        # Commit so write clauses (MERGE/CREATE/SET/DELETE) persist — a SQLAlchemy
+        # session opens a transaction and rolls back on close otherwise, which would
+        # silently drop every graph write (e.g. seed_graph). Harmless for read-only
+        # RETURN queries.
+        await session.commit()
         out: List[Dict[str, Any]] = []
         for r in rows:
             try:
