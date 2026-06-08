@@ -8,9 +8,33 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 SERVICE_NAME = "l1-signalfabric"
 SERVICE_VERSION = "0.1.0"
+
+
+def _load_dotenv() -> None:
+    """Populate os.environ from a local ``.env`` (dependency-free).
+
+    Real process env always wins (an exported var overrides the file), so this
+    only fills in what isn't already set. Searches this service dir first, then
+    the sibling ``backend/.env`` (shared monorepo secrets)."""
+    here = Path(__file__).resolve().parent
+    for candidate in (here / ".env", here.parent / "backend" / ".env"):
+        if not candidate.is_file():
+            continue
+        for line in candidate.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, val = line.partition("=")
+            key, val = key.strip(), val.strip().strip('"').strip("'")
+            if key and key not in os.environ:
+                os.environ[key] = val
+
+
+_load_dotenv()
 
 
 def _flag(name: str, default: bool) -> bool:
