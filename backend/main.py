@@ -12,7 +12,7 @@ from fastapi.responses import JSONResponse
 from api.routes.crew import router as crew_router
 from api.routes.workflow import router as workflow_router
 from api.routes.monitoring import router as monitoring_router
-from api.routes.graph import router as graph_router
+from L2Knowledge_graph.routes import router as graph_router
 from api.websockets.workflow_ws import manager
 from config import settings
 from database.db import init_db

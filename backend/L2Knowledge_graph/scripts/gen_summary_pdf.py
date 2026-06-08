@@ -2,11 +2,11 @@
 Generate L2_Implementation_Summary.pdf — a one-stop summary of everything built
 for the L2 Knowledge Graph (EntityMap dimension, API, query UI, docs, infra).
 
-    python -m scripts.gen_summary_pdf [output_dir]
+    python -m L2Knowledge_graph.scripts.gen_summary_pdf [output_dir]
 """
 import sys
 
-from scripts.gen_l2_pdfs import L2PDF
+from L2Knowledge_graph.L2Knowledge_graph.scripts.gen_l2_pdfs import L2PDF
 
 
 def build(path: str):
@@ -126,7 +126,7 @@ def build(path: str):
     p.code(
         "cd backend\n"
         "python -m scripts.seed_crew          # 40 crew rows into Postgres\n"
-        "python -m scripts.seed_entity_map    # build the EntityMap graph\n"
+        "python -m L2Knowledge_graph.scripts.seed_entity_map    # build the EntityMap graph\n"
         "uvicorn main:app --port 8000         # backend API\n"
         "# frontend:  cd frontend && npm run dev   ->  open http://localhost:3000/graph")
 

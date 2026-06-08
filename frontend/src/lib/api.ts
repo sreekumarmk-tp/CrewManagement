@@ -96,12 +96,28 @@ export interface GraphFacets {
   certificates: string[];
   ports: string[];
 }
+export interface GraphNodeRelationship {
+  dir: "in" | "out";
+  rel: string;
+  other: string;
+  other_type: string;
+  other_id: number | string;
+}
+export interface GraphNodeDetail {
+  id: string;
+  label: string;                       // entity type (Crew | Vessel | ...)
+  properties: Record<string, string | number | null>;
+  relationships: GraphNodeRelationship[];
+  degree: number;
+}
 
 export const graphApi = {
   getSummary: () => api.get<GraphSummary>("/graph/summary").then(r => r.data),
   getFacets: () => api.get<GraphFacets>("/graph/facets").then(r => r.data),
   getSubgraph: (params: { rank?: string; certificate?: string; port?: string; limit?: number }) =>
     api.get<GraphSubgraph>("/graph/subgraph", { params }).then(r => r.data),
+  getNode: (nodeId: string) =>
+    api.get<GraphNodeDetail>(`/graph/node/${encodeURIComponent(nodeId)}`).then(r => r.data),
 };
 
 // Capabilities of each managed agent. `tools` are its functions (custom tools

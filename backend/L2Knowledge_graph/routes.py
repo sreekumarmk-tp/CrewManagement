@@ -10,16 +10,17 @@ import time
 
 from fastapi import APIRouter, HTTPException, Query
 
-from database.entity_map import (
+from L2Knowledge_graph.entity_map import (
     ENTITY_EDGES,
     ENTITY_LABELS,
     entity_map_summary,
     facets,
+    node_detail,
     search_crew,
     search_subgraph,
     traverse_crew,
 )
-from database.graph_db import GRAPH_NAME, age_enabled
+from L2Knowledge_graph.graph_db import GRAPH_NAME, age_enabled
 
 router = APIRouter(prefix="/graph", tags=["graph"])
 
@@ -29,7 +30,7 @@ def _require_age() -> None:
         raise HTTPException(
             status_code=503,
             detail="Graph backend disabled. Set GRAPH_BACKEND=age and seed the graph "
-            "(python -m scripts.seed_entity_map) to enable the L2 knowledge graph.",
+            "(python -m L2Knowledge_graph.scripts.seed_entity_map) to enable the L2 knowledge graph.",
         )
 
 
@@ -70,6 +71,18 @@ async def graph_subgraph(
     result = await search_subgraph(rank=rank, certificate=certificate, port=port, limit=limit)
     result["elapsed_ms"] = round((time.perf_counter() - started) * 1000, 1)
     return result
+
+
+@router.get("/node/{node_id}")
+async def graph_node(node_id: str):
+    """Full detail for one node (properties + incoming/outgoing relationships).
+    Called when a node is clicked in the query UI. node_id is the id from the
+    /subgraph payload (e.g. 'c105...' / 'n106...')."""
+    _require_age()
+    detail = await node_detail(node_id)
+    if not detail:
+        raise HTTPException(status_code=404, detail=f"No graph node for id '{node_id}'.")
+    return detail
 
 
 @router.get("/crew/search")

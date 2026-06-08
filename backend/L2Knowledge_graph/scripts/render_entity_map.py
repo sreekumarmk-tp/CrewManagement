@@ -7,7 +7,7 @@ Produces two views in the output dir (default: repo root):
   * L2_entitymap_vessel.png    — a focused, legible view of one vessel's crew with
                                  their certificates, ports and contracts
 
-    GRAPH_BACKEND=age python -m scripts.render_entity_map [output_dir] [vessel_name]
+    GRAPH_BACKEND=age python -m L2Knowledge_graph.scripts.render_entity_map [output_dir] [vessel_name]
 """
 import asyncio
 import sys
@@ -18,7 +18,7 @@ import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import networkx as nx
 
-from database.graph_db import run_cypher
+from L2Knowledge_graph.graph_db import run_cypher
 
 # colour per entity label
 COLOURS = {
@@ -69,7 +69,7 @@ async def main():
 
     nodes, edges = await _fetch_all()
     if not nodes:
-        print("No graph data. Run with GRAPH_BACKEND=age after seeding (scripts.seed_entity_map).")
+        print("No graph data. Run with GRAPH_BACKEND=age after seeding (L2Knowledge_graph.scripts.seed_entity_map).")
         return
 
     meta = {n["id"]: n for n in nodes}

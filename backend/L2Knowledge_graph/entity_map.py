@@ -44,7 +44,7 @@ from typing import Any, Dict, List, Optional
 import structlog
 
 from database.crew_repository import get_sign_off_crew, get_sign_on_crew
-from database.graph_db import age_enabled, ensure_graph, run_cypher
+from L2Knowledge_graph.graph_db import age_enabled, ensure_graph, run_cypher
 
 log = structlog.get_logger()
 
@@ -300,6 +300,50 @@ async def search_subgraph(
         "edges": list(edges.values()),
         "total_nodes": len(nodes),
         "total_edges": len(edges),
+    }
+
+
+async def node_detail(node_id: str) -> Optional[Dict[str, Any]]:
+    """Full detail for a single node, addressed by the id used in the subgraph
+    payload (e.g. 'c105...' for crew, 'n106...' for everything else). Returns the
+    node's label, all its properties, and its incoming + outgoing relationships —
+    everything the UI needs to show when a node is clicked.
+    """
+    digits = "".join(ch for ch in str(node_id) if ch.isdigit())
+    if not digits:
+        return None
+    info = await run_cypher(
+        f"MATCH (n) WHERE id(n) = {digits} "
+        "RETURN {label: labels(n)[0], props: properties(n)} AS v"
+    )
+    info = [r for r in info if isinstance(r, dict) and r.get("label")]
+    if not info:
+        return None
+    out = await run_cypher(
+        f"MATCH (n)-[r]->(m) WHERE id(n) = {digits} "
+        "RETURN {dir:'out', rel: type(r), other_id: id(m), "
+        "other: coalesce(m.name, m.type, m.contract_id, m.crew_id), "
+        "other_type: labels(m)[0]} AS v"
+    )
+    inc = await run_cypher(
+        f"MATCH (n)<-[r]-(m) WHERE id(n) = {digits} "
+        "RETURN {dir:'in', rel: type(r), other_id: id(m), "
+        "other: coalesce(m.name, m.type, m.contract_id, m.crew_id), "
+        "other_type: labels(m)[0]} AS v"
+    )
+    rels = [r for r in (out + inc) if isinstance(r, dict) and r.get("rel")]
+    # AGE node ids are 60-bit integers that exceed JS's safe integer range, so
+    # serialise other_id as a STRING — otherwise the browser's JSON.parse rounds it
+    # and a relationship-row "jump" would query the wrong node.
+    for r in rels:
+        if r.get("other_id") is not None:
+            r["other_id"] = str(r["other_id"])
+    return {
+        "id": str(node_id),
+        "label": info[0].get("label"),
+        "properties": info[0].get("props") or {},
+        "relationships": rels,
+        "degree": len(rels),
     }
 
 

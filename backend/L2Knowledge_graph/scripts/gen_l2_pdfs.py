@@ -5,7 +5,7 @@ Generate the two L2 deliverable PDFs:
   * L2ImplementationSimpleWords.pdf  — how it was built, in plain language
 
 Pure-Python (fpdf2), no system PDF engine needed.
-    python -m scripts.gen_l2_pdfs [output_dir]
+    python -m L2Knowledge_graph.scripts.gen_l2_pdfs [output_dir]
 """
 import sys
 
@@ -353,7 +353,7 @@ def build_implementation(path: str):
         "cd backend\n"
         "echo GRAPH_BACKEND=age >> .env          # turn the graph on\n"
         "python -m scripts.seed_crew             # load 40 crew rows\n"
-        "python -m scripts.seed_entity_map       # build the graph\n"
+        "python -m L2Knowledge_graph.scripts.seed_entity_map       # build the graph\n"
         "curl localhost:8000/api/v1/graph/summary")
 
     p.h2("8. What's next (not built yet)")

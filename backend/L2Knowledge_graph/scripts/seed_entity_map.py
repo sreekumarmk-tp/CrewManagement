@@ -11,12 +11,12 @@ Prerequisites:
     3. The crew table seeded first:   python -m scripts.seed_crew
 
 Usage:
-    python -m scripts.seed_entity_map
+    python -m L2Knowledge_graph.scripts.seed_entity_map
 """
 import asyncio
 import json
 
-from database.entity_map import build_entity_map
+from L2Knowledge_graph.entity_map import build_entity_map
 
 
 async def main() -> None:
