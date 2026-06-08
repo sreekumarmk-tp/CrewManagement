@@ -163,6 +163,8 @@
   <button type="button" class="tab" id="tab-buslog" role="tab" aria-selected="false"
           aria-controls="panel-buslog" onclick="showTab('buslog')">🧾 Bus log (InMemoryBus)
     <span class="tabbadge" id="busbadge" hidden>0</span></button>
+  <button type="button" class="tab" id="tab-agents" role="tab" aria-selected="false"
+          aria-controls="panel-agents" onclick="showTab('agents')">🤖 Agents (test · critic)</button>
 </div>
 
 <div class="wrap">
@@ -202,6 +204,20 @@
     </div>
     <div id="buslog" class="console"></div>
   </section>
+
+  <!-- test / critic agents -->
+  <section class="card panel" id="panel-agents" role="tabpanel" aria-labelledby="tab-agents" hidden>
+    <h2>🤖 Test &amp; Critic agents
+      <span id="agentstatus" style="margin-left:auto;color:var(--muted)">idle</span></h2>
+    <div class="toolbar">
+      <button type="button" class="primary" id="btn-test" onclick="runAgent('test')">▶ Run Test Agent</button>
+      <button type="button" id="btn-critic" onclick="runAgent('critic')">▶ Run Critic Agent</button>
+      <button type="button" onclick="clearAgentOut()">Clear</button>
+      <span class="hint" style="padding:0"><b>Test</b> = every scenario PASS/FAIL ·
+        <b>Critic</b> = contract validation + what to correct / make advanced (email + SharePoint).</span>
+    </div>
+    <div id="agentout" class="console" style="white-space:pre-wrap">Click <b>Run Test Agent</b> or <b>Run Critic Agent</b> to run the harness on the server and see its output here.</div>
+  </section>
 </div>
 
 <!-- detail drawer: raw → normalized → L2 for a clicked live-tail row -->
@@ -229,7 +245,7 @@ let rid = 0, selRow = null;
 const srcShort = s => (s||"").replace("_DB","").replace("_PORT","");
 
 // ---- tab switching (Demo 1 ⇄ Live tail ⇄ Bus log) ----
-const TABS = ["demo","tail","buslog"];
+const TABS = ["demo","tail","buslog","agents"];
 function showTab(name){
   TABS.forEach(t => {
     const on = t === name;
@@ -416,6 +432,36 @@ function connect(){
 }
 
 async function post(url){ try{ const r=await fetch(url,{method:"POST"}); return await r.json(); }catch(e){ return {error:String(e)}; } }
+
+// ---- test / critic agents ----
+function clearAgentOut(){ $("agentout").textContent = "Cleared. Click Run Test Agent or Run Critic Agent."; }
+function colorizeAgent(text){
+  return String(text).split("\n").map(line => {
+    let cls = "lvl-info";
+    if(/\[FAIL\]|INVALID|ERROR:|RESULT: \d+ implemented|regression/i.test(line)) cls = "lvl-error";
+    else if(/\bBLOCKER\b|\bHIGH\b|\bMEDIUM\b|LIVE TARGET|LIVE GAP|^\s*warn |\[ \]|to build|to-do/i.test(line)) cls = "lvl-warning";
+    else if(/\[PASS\]|VALID(?!\W*kind)| PASS\b|all implemented scenarios PASS|\[x\]/i.test(line)) cls = "lvl-info";
+    else cls = "";
+    return `<span class="logline ${cls}" style="display:block">${escapeHtml(line) || "&nbsp;"}</span>`;
+  }).join("");
+}
+async function runAgent(which){
+  const label = which === "test" ? "Test Agent" : "Critic Agent";
+  const mod = which === "test" ? "test_agent" : "critic_agent";
+  $("btn-test").disabled = $("btn-critic").disabled = true;
+  $("agentstatus").textContent = `running ${label}…`;
+  $("agentout").innerHTML = `<span class="logline lvl-warning" style="display:block">$ python -m tests.agents.${mod}   (running on the server…)</span>`;
+  const r = await post(`/agents/${which}`);
+  if(r.error){
+    $("agentout").innerHTML = `<span class="logline lvl-error" style="display:block">${escapeHtml(r.error)}</span>`;
+    $("agentstatus").textContent = "error";
+  } else {
+    $("agentout").innerHTML = colorizeAgent(r.output || "(no output)");
+    const ok = r.exit_code === 0;
+    $("agentstatus").innerHTML = `${label} done · exit <b style="color:${ok?'var(--ok)':'#f43f5e'}">${r.exit_code}</b>`;
+  }
+  $("btn-test").disabled = $("btn-critic").disabled = false;
+}
 async function start(){ pulsePipe(); await post(`/demo/start?speed=${$("speed").value||6000}`); }
 async function stop(){ await post("/demo/stop"); }
 async function backlog(){ pulsePipe(); await post("/demo/backlog"); }

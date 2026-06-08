@@ -17,7 +17,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import random
+import subprocess
+import sys
 import time
 from collections import Counter, deque
 from datetime import datetime, timezone
@@ -382,3 +385,45 @@ async def demo_status(request: Request) -> dict:
         "l2_store": request.app.state.l2_store.counts()
         if getattr(request.app.state, "l2_store", None) else None,
     }
+
+
+# ------------------------------ test / critic agents ------------------------------ #
+# Run the tests/agents/* harness from the dashboard. Each agent is launched as an
+# isolated subprocess (same interpreter, project root as cwd) so it can't mutate
+# this server's logging/stdout — its captured text output is returned verbatim.
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _run_agent_blocking(module: str) -> dict:
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = "utf-8"   # the agents print box-drawing/Unicode
+    proc = subprocess.run(
+        [sys.executable, "-m", module],
+        cwd=str(_PROJECT_ROOT), env=env,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=180,
+    )
+    return {"module": module, "exit_code": proc.returncode,
+            "output": (proc.stdout or "") + (proc.stderr or "")}
+
+
+async def _run_agent_module(module: str) -> dict:
+    # Offload to a thread: uvicorn's Windows event loop has no async-subprocess
+    # support, so we run the agent with a blocking subprocess.run off the loop.
+    try:
+        return await asyncio.to_thread(_run_agent_blocking, module)
+    except Exception as exc:  # surface launch failures in the panel instead of 500ing
+        return {"module": module, "exit_code": -1,
+                "error": f"failed to launch {module}: {exc!r}"}
+
+
+@router.post("/agents/test")
+async def agents_test() -> dict:
+    """Run the Test Agent (every scenario, PASS/FAIL each) and return its output."""
+    return await _run_agent_module("tests.agents.test_agent")
+
+
+@router.post("/agents/critic")
+async def agents_critic() -> dict:
+    """Run the Critic Agent (contract validation + critique) and return its output."""
+    return await _run_agent_module("tests.agents.critic_agent")
