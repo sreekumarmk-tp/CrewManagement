@@ -49,7 +49,7 @@ if age_enabled():
         try:
             cur = dbapi_conn.cursor()
             cur.execute("LOAD 'age';")
-            cur.execute('SET search_path = ag_catalog, "$user", public;')
+            cur.execute('SET search_path = "$user", public, ag_catalog;')
             cur.close()
         except Exception as exc:
             log.warning("age.load_failed", error=str(exc))
@@ -88,6 +88,9 @@ async def run_cypher(query: str) -> List[Dict[str, Any]]:
                 out.append(json.loads(r[0]))
             except Exception:
                 out.append({"raw": str(r[0])})
+        # MERGE / CREATE are wrapped in an implicit transaction by the session;
+        # commit so writes persist (no-op for read-only MATCH queries).
+        await session.commit()
         return out
 
 
@@ -100,7 +103,7 @@ async def ensure_graph() -> None:
     async with AsyncSessionLocal() as session:
         await session.execute(text("CREATE EXTENSION IF NOT EXISTS age;"))
         await session.execute(text("LOAD 'age';"))
-        await session.execute(text('SET search_path = ag_catalog, "$user", public;'))
+        await session.execute(text('SET search_path = "$user", public, ag_catalog;'))
         try:
             await session.execute(text(f"SELECT create_graph('{GRAPH_NAME}');"))
         except Exception:
