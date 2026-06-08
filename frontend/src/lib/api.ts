@@ -1,5 +1,5 @@
 import axios from "axios";
-import type { CrewMember, WorkflowState, SystemMetrics, ROIMetrics, DecisionTrace } from "@/types";
+import type { CrewMember, WorkflowState, SystemMetrics, ROIMetrics, DecisionTrace, PatternReport } from "@/types";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -68,6 +68,12 @@ export const decisionApi = {
 
   seedDemo: () =>
     api.post<{ seeded: number; decisions: DecisionTrace[] }>("/decisions/demo-seed").then(r => r.data),
+};
+
+// ── Pattern Detection (L4 #4) ──────────────────────────────────────────────────
+export const patternApi = {
+  get: (limit?: number) =>
+    api.get<PatternReport>("/patterns/", { params: { limit } }).then(r => r.data),
 };
 
 // Capabilities of each managed agent. `tools` are its functions (custom tools

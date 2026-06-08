@@ -24,6 +24,7 @@ import { useWebSocket } from "@/hooks/useWebSocket";
 import { useWorkflowStore } from "@/store/workflowStore";
 import DecisionGraph from "@/components/decisions/DecisionGraph";
 import PrecedentPanel from "@/components/decisions/PrecedentPanel";
+import PatternPanel from "@/components/decisions/PatternPanel";
 import type { DecisionTrace, DecisionTrajectoryStep, ComplianceAttempt } from "@/types";
 
 // How long each decision stays on screen during the auto-play walkthrough.
@@ -288,6 +289,12 @@ export default function DecisionsPage() {
             </div>
           </motion.div>
         )}
+
+        {/* L4 #4 — pattern detection builds up incrementally: it aggregates only the
+            decisions whose outcome has been revealed so far (the walkthrough reveals
+            them one crew member at a time), so counts/reject-rate/recurring-gap start
+            at zero and grow as each outcome lands. */}
+        <PatternPanel decisions={decisions.filter((d) => revealedOutcomes.has(d.decision_id))} />
 
         <div className="grid grid-cols-12 gap-6">
           {/* Left: decision list */}

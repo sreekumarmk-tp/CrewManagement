@@ -449,6 +449,36 @@ export interface DecisionTrace {
   cache_creation_tokens: number;
 }
 
+// ─── Pattern Detection (L4 #4) ─────────────────────────────────────────────────
+// Aggregate view over the decision history: which compliance-failure categories
+// recur, and the single recurring gap flagged from them.
+export interface PatternCategory {
+  category: string;
+  label: string;
+  decisions_affected: number;
+  occurrences: number;
+  ports: string[];
+  ranks: string[];
+  examples: string[];
+}
+
+export interface RecurringGap extends PatternCategory {
+  recommendation: string;
+}
+
+export interface PatternReport {
+  summary: {
+    total: number;
+    signed_on: number;
+    rejected: number;
+    pending: number;
+    rejection_rate: number;
+  };
+  categories: PatternCategory[];
+  recurring_gap: RecurringGap | null;
+  generated_at: string;
+}
+
 // ─── WebSocket Event ──────────────────────────────────────────────────────────
 
 export interface WSEvent {
