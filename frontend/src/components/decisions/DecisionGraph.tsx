@@ -56,6 +56,7 @@ const STATUS_COLOR: Record<string, string> = {
   passed: "#22c55e",
   warning: "#f59e0b",
   failed: "#ef4444",
+  checking: "#00d4ff",   // live — candidate's documents being validated
 };
 
 interface DGNodeData {
@@ -116,15 +117,26 @@ export default function DecisionGraph({
   decision: DecisionTrace | null;
   onOutcomeRevealed?: (decisionId: string) => void;
 }) {
-  // A retry happened when the sign-off went through ≥2 compliance attempts.
   const attempts = useMemo(() => decision?.attempts ?? [], [decision]);
-  const retryMode = attempts.length >= 2;
 
-  // Last stage index varies. Default flow tops out at 4. The retry LOOP reveals two
-  // steps per attempt — the candidate is selected by L3 (stage 2+2i), then its
-  // verdict either loops back to L3 as feedback or reaches the outcome (stage 3+2i)
-  // — so the final outcome lands at 2n+1.
-  const maxStage = retryMode ? 2 * attempts.length + 1 : 4;
+  // LIVE = the placement is still pending but candidates are already being tried
+  // (an in-progress attempt chain exists). While live the graph mirrors the CURRENT
+  // state as events arrive — no staged replay — so a rejected candidate flips to
+  // "Rejected" and the next candidate appears the instant the orchestrator moves on.
+  const live = decision?.outcome_status === "pending" && attempts.length > 0;
+  const lastChecking = attempts[attempts.length - 1]?.compliance_status === "checking";
+
+  // The reject→retry chain view is used whenever ≥2 attempts exist, OR while live
+  // (even the first in-progress candidate is shown on the chain rather than as a lone
+  // "Pending" node).
+  const retryMode = attempts.length >= 2 || (live && attempts.length >= 1);
+
+  // Last stage index. Default flow tops out at 4. The retry LOOP reveals two steps
+  // per attempt — candidate selected by L3 (stage 2+2i), then its verdict loops back
+  // or resolves (stage 3+2i). While live there is no resolved outcome node yet, so the
+  // frontier is the in-progress candidate (…+0) or the latest rejection's feedback
+  // edge (…+1); once resolved the chain ends at the outcome node (…+1).
+  const maxStage = retryMode ? 2 * attempts.length + (live && lastChecking ? 0 : 1) : 4;
 
   // Reveal stage, COUPLED to the decision it belongs to (a stale id counts as 0 so
   // nothing reveals early when the walkthrough advances to the next decision).
@@ -133,6 +145,13 @@ export default function DecisionGraph({
 
   useEffect(() => {
     if (!decisionId) return;
+    // Live: jump straight to the current frontier so each new attempt shows the moment
+    // its event lands — and a growing maxStage never restarts the reveal from zero.
+    if (live) {
+      setReveal({ id: decisionId, stage: maxStage });
+      return;
+    }
+    // Completed: reveal stage by stage so the viewer follows query → … → outcome.
     setReveal({ id: decisionId, stage: 0 });
     const timers: ReturnType<typeof setTimeout>[] = [];
     for (let s = 1; s <= maxStage; s++) {
@@ -144,21 +163,24 @@ export default function DecisionGraph({
       );
     }
     return () => timers.forEach(clearTimeout);
-  }, [decisionId, maxStage]);
+  }, [decisionId, maxStage, live]);
 
   const stage = reveal.id === decisionId ? reveal.stage : 0;
 
   useEffect(() => {
-    if (decisionId && reveal.id === decisionId && reveal.stage >= maxStage) {
+    // Reveal the (final) outcome label only once the decision has actually resolved —
+    // never while it's still live/pending (its outcome is not yet known).
+    if (!live && decisionId && reveal.id === decisionId && reveal.stage >= maxStage) {
       onOutcomeRevealed?.(decisionId);
     }
-  }, [reveal, decisionId, onOutcomeRevealed, maxStage]);
+  }, [reveal, decisionId, onOutcomeRevealed, maxStage, live]);
 
-  // Build the full graph (with per-node stage tags) — only when the decision changes.
+  // Build the full graph (with per-node stage tags) — rebuilds as the decision (and,
+  // while live, its attempt chain) changes.
   const base = useMemo(() => {
     if (!decision) return { nodes: [] as Node<DGNodeData>[], edges: [] as Edge[] };
-    return retryMode ? buildRetryGraph(decision) : buildDefaultGraph(decision);
-  }, [decision, retryMode]);
+    return retryMode ? buildRetryGraph(decision, live) : buildDefaultGraph(decision);
+  }, [decision, retryMode, live]);
 
   // Apply the current reveal stage: nodes fade in by stage; an edge shows once both
   // its endpoints are visible.
@@ -200,7 +222,10 @@ export default function DecisionGraph({
     attempts.forEach((a, i) => {
       stageLabels.push(`Attempt ${i + 1}`);
       const passed = a.compliance_status === "passed" || a.compliance_status === "warning";
-      stageLabels.push(i === attempts.length - 1 || passed ? "Outcome" : "Feedback → L3");
+      const checking = a.compliance_status === "checking";
+      stageLabels.push(
+        checking ? "Validating…" : live ? "Feedback → L3" : i === attempts.length - 1 || passed ? "Outcome" : "Feedback → L3"
+      );
     });
   } else {
     stageLabels = ["Query", "Decision", "Chosen crew", "Alternatives", "Outcome"];
@@ -247,6 +272,9 @@ export default function DecisionGraph({
             <span className="flex items-center gap-1"><i className="w-2 h-2 rounded-full" style={{ background: STATUS_COLOR.failed }} /> Rejected attempt</span>
             <span className="flex items-center gap-1"><i className="w-2 h-2 rounded-full" style={{ background: STATUS_COLOR.passed }} /> Cleared / signed on</span>
             <span className="flex items-center gap-1"><i className="w-2 h-2 rounded-full" style={{ background: STATUS_COLOR.warning }} /> Conditional</span>
+            {live && (
+              <span className="flex items-center gap-1"><i className="w-2 h-2 rounded-full animate-pulse" style={{ background: STATUS_COLOR.checking }} /> Validating</span>
+            )}
           </>
         ) : (
           <>
@@ -344,7 +372,7 @@ function buildDefaultGraph(decision: DecisionTrace): { nodes: Node<DGNodeData>[]
 // the Decision (L3) node; a rejected candidate loops a "feedback to L3" edge back to
 // it, and L3 then selects the next-ranked candidate. The first to clear connects to
 // the Outcome; if all fail, the last connects to a Rejected outcome.
-function buildRetryGraph(decision: DecisionTrace): { nodes: Node<DGNodeData>[]; edges: Edge[] } {
+function buildRetryGraph(decision: DecisionTrace, live = false): { nodes: Node<DGNodeData>[]; edges: Edge[] } {
   const attempts = decision.attempts || [];
   const n = attempts.length;
   const outcomeColor = OUTCOME_COLOR[decision.outcome_status] || OUTCOME_COLOR.pending;
@@ -385,6 +413,8 @@ function buildRetryGraph(decision: DecisionTrace): { nodes: Node<DGNodeData>[]; 
     const status = a.compliance_status || "failed";
     const color = STATUS_COLOR[status] || STATUS_COLOR.failed;
     const passed = status === "passed" || status === "warning";
+    const checking = status === "checking";   // live, in-progress candidate
+    const failed = status === "failed";
     const id = `att-${i}`;
     const nodeStage = 2 + 2 * i;     // L3 selects this candidate
     const resStage = 3 + 2 * i;      // its verdict resolves (loop-back or outcome)
@@ -393,9 +423,9 @@ function buildRetryGraph(decision: DecisionTrace): { nodes: Node<DGNodeData>[]; 
       id, type: "dgNode", position: { x: 620, y: 30 + i * ROW },
       data: {
         tag: i === 0 ? "Attempt 1 · top match" : `Attempt ${i + 1} · retry`,
-        kind: "attempt", ring: color, accent: color, glow: passed, stage: nodeStage, visible: true,
+        kind: "attempt", ring: color, accent: color, glow: passed || checking, stage: nodeStage, visible: true,
         label: a.name || a.crew_id,
-        sub: `${passed ? "Cleared compliance" : "Rejected"}${a.compliance_score != null ? ` · ${a.compliance_score}%` : ""}`,
+        sub: `${passed ? "Cleared compliance" : checking ? "Validating…" : "Rejected"}${a.compliance_score != null ? ` · ${a.compliance_score}%` : ""}`,
       },
     });
 
@@ -406,8 +436,10 @@ function buildRetryGraph(decision: DecisionTrace): { nodes: Node<DGNodeData>[]; 
       KIND_ACCENT.decision, nodeStage, true,
     ));
 
-    // Rejected (and not the final candidate) → feedback loop back to L3.
-    if (!passed && i < n - 1) {
+    // A rejected candidate routes back to L3 to pick the next-best. While live the
+    // most-recent rejection also loops (we're between candidates, awaiting the next);
+    // once resolved the final attempt connects to the outcome instead (handled below).
+    if (failed && (i < n - 1 || live)) {
       edges.push({
         id: `e-${id}-loop`, source: id, sourceHandle: "loopOut",
         target: "decision", targetHandle: "loopIn",
@@ -421,30 +453,33 @@ function buildRetryGraph(decision: DecisionTrace): { nodes: Node<DGNodeData>[]; 
     }
   });
 
-  // Outcome node, connected from the candidate that resolved the loop (the one that
-  // cleared, or the last one if all failed).
-  const outcomeStage = 3 + 2 * connectIdx;
-  const outcomeLabel = decision.outcome_status === "signed_on"
-    ? "Signed On"
-    : decision.outcome_status === "rejected"
-    ? "Rejected"
-    : "Pending";
-  nodes.push({
-    id: "outcome", type: "dgNode", position: { x: 980, y: 30 + connectIdx * ROW },
-    data: {
-      tag: "Outcome", kind: "outcome", ring: outcomeColor, accent: outcomeColor, glow: true,
-      stage: outcomeStage, visible: true,
-      label: outcomeLabel,
-      sub: decision.compliance_status
-        ? `Compliance: ${decision.compliance_status}${decision.compliance_score != null ? ` (${decision.compliance_score}%)` : ""}`
-        : undefined,
-    },
-  });
-  edges.push(mkEdge(
-    "e-att-o", `att-${connectIdx}`, "outcome",
-    accepted ? "signed on" : "rejected", outcomeColor, outcomeStage,
-    decision.outcome_status === "pending",
-  ));
+  // No resolved outcome node while live — the frontier is the in-progress (or
+  // just-rejected, awaiting-next) candidate. The outcome appears only once the
+  // placement actually resolves to signed_on / rejected.
+  if (!live) {
+    const outcomeStage = 3 + 2 * connectIdx;
+    const outcomeLabel = decision.outcome_status === "signed_on"
+      ? "Signed On"
+      : decision.outcome_status === "rejected"
+      ? "Rejected"
+      : "Pending";
+    nodes.push({
+      id: "outcome", type: "dgNode", position: { x: 980, y: 30 + connectIdx * ROW },
+      data: {
+        tag: "Outcome", kind: "outcome", ring: outcomeColor, accent: outcomeColor, glow: true,
+        stage: outcomeStage, visible: true,
+        label: outcomeLabel,
+        sub: decision.compliance_status
+          ? `Compliance: ${decision.compliance_status}${decision.compliance_score != null ? ` (${decision.compliance_score}%)` : ""}`
+          : undefined,
+      },
+    });
+    edges.push(mkEdge(
+      "e-att-o", `att-${connectIdx}`, "outcome",
+      accepted ? "signed on" : "rejected", outcomeColor, outcomeStage,
+      decision.outcome_status === "pending",
+    ));
+  }
 
   return { nodes, edges };
 }

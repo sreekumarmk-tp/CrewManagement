@@ -207,6 +207,26 @@ class WorkflowService:
                 ),
             })
 
+            # Persist an in-progress ("checking") attempt BEFORE running compliance so a
+            # client that lands on the Decisions tab mid-run sees this candidate being
+            # validated rather than a stale lone pending node. Overwritten in place with
+            # the verdict below.
+            attempts.append({
+                "order": idx + 1,
+                "crew_id": cid,
+                "name": profile.get("name"),
+                "rank": profile.get("rank"),
+                "compliance_status": "checking",
+                "compliance_score": None,
+                "failures": [],
+                "warnings": [],
+            })
+            await decision_trace_service.record_progress(
+                workflow.workflow_id,
+                attempts=attempts,
+                pending_reason=f"Validating {profile.get('name')}'s documents (attempt {idx + 1})…",
+            )
+
             updated = await master.orchestrate_compliance(workflow, profile, port)
             await state_service.update_workflow(updated)
 
@@ -219,7 +239,8 @@ class WorkflowService:
             failures = report.get("failures", []) or []
             recommendation = report.get("recommendation")
 
-            attempts.append({
+            # Replace the in-progress placeholder with the actual compliance verdict.
+            attempts[-1] = {
                 "order": idx + 1,
                 "crew_id": cid,
                 "name": profile.get("name"),
@@ -228,7 +249,7 @@ class WorkflowService:
                 "compliance_score": score,
                 "failures": failures,
                 "warnings": warnings,
-            })
+            }
 
             # Pass rule: 'passed' or 'warning' (conditional) signs the crew on.
             if status in ("passed", "warning"):
@@ -238,10 +259,20 @@ class WorkflowService:
                 }
                 break
 
-            # Failed this candidate. If alternatives remain, announce the retry;
-            # otherwise fall through to the final rejection below.
+            # Failed this candidate. Persist the rejection (still pending overall) so the
+            # DB reflects it for a mid-run reader; if alternatives remain, announce the
+            # retry — otherwise fall through to the final rejection below.
             log.info("auto_compliance.attempt_rejected", crew_id=cid, status=status, attempt=idx + 1)
-            if idx < len(queue) - 1:
+            more = idx < len(queue) - 1
+            await decision_trace_service.record_progress(
+                workflow.workflow_id,
+                attempts=attempts,
+                pending_reason=(
+                    f"{profile.get('name')} failed compliance ({status}); "
+                    + ("selecting the next-best candidate…" if more else "no candidates remain.")
+                ),
+            )
+            if more:
                 await self._event_callback("sign_on_attempt_rejected", "Compliance Agent", {
                     "workflow_id": workflow.workflow_id,
                     "crew_id": cid,

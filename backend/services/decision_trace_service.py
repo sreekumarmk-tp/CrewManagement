@@ -26,6 +26,7 @@ from database.decision_repository import (
     insert_decision,
     list_decisions,
     update_outcome_by_workflow,
+    update_progress_by_workflow,
 )
 from database.precedent_repository import delete_demo_precedents
 from database.models import WorkflowState
@@ -91,6 +92,28 @@ class DecisionTraceService:
             return stored
         except Exception:
             log.warning("decision.capture.failed", workflow_id=workflow.workflow_id, exc_info=True)
+            return None
+
+    async def record_progress(
+        self,
+        workflow_id: str,
+        *,
+        attempts: list,
+        pending_reason: Optional[str] = None,
+    ) -> Optional[dict]:
+        """Persist the in-progress attempt chain mid-retry, leaving the outcome pending.
+
+        L4 #4 — so a client that opens the Decisions tab while a sign-off is still
+        running (or that missed a live WebSocket event) reads the current reject→retry
+        journey from the DB instead of a stale lone 'pending' node. Best-effort; never
+        raises and never broadcasts (the live events already carry the same data).
+        """
+        try:
+            return await update_progress_by_workflow(
+                workflow_id, attempts=attempts, pending_reason=pending_reason
+            )
+        except Exception:
+            log.warning("decision.progress.failed", workflow_id=workflow_id, exc_info=True)
             return None
 
     async def record_outcome(

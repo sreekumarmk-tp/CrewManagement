@@ -173,7 +173,14 @@ export const useWorkflowStore = create<WorkflowStore>()(
           // The compliance verdict (incl. the reject→retry journey) — used to drive
           // the Decision Graph's outcome even if the DB outcome-stamp was missed.
           event.event_type === "crew_signed_on" ||
-          event.event_type === "sign_on_rejected"
+          event.event_type === "sign_on_rejected" ||
+          // Intermediate retry-loop events drive the LIVE Decision Graph: each
+          // candidate being validated (auto_compliance) and each mid-retry rejection
+          // (sign_on_attempt_rejected) updates the in-progress attempt chain so a
+          // rejected candidate flips to "Rejected" and the next candidate appears the
+          // moment the orchestrator moves on — instead of sitting on "Pending".
+          event.event_type === "auto_compliance" ||
+          event.event_type === "sign_on_attempt_rejected"
         ) {
           set({ lastDecisionEvent: event });
         }
@@ -262,6 +269,23 @@ export const useWorkflowStore = create<WorkflowStore>()(
                 reasons: (data.failures as string[]) || [],
                 recommendation: data.recommendation as string,
                 subgraph: (data.subgraph as ComplianceSubgraph) || undefined,
+              },
+            });
+            break;
+
+          case "sign_on_attempt_rejected":
+            // A candidate failed compliance mid-retry. Surface the rejection in the
+            // crew panel before the orchestrator moves on; the next candidate's
+            // auto_compliance event flips this back to "validating".
+            set({
+              signOnOutcome: {
+                crewId: data.crew_id as string,
+                crewName: data.crew_name as string,
+                crewRank: data.crew_rank as string,
+                phase: "rejected",
+                complianceStatus: data.compliance_status as string,
+                complianceScore: data.compliance_score as number,
+                reasons: (data.failures as string[]) || [],
               },
             });
             break;
