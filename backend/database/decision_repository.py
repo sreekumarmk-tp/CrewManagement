@@ -8,10 +8,14 @@ list[dict] / None so call sites just `await` them.
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from database.db import AsyncSessionLocal
 from database.decision_orm import DecisionTrace
+
+# Seed/demo rows are stamped with this workflow_id prefix (see seed_demo); live
+# captures never use it, so it's a safe filter for "sample data only".
+DEMO_PREFIX = "demo-"
 
 
 async def insert_decision(record: dict) -> dict:
@@ -104,3 +108,30 @@ async def count_decisions() -> int:
     async with AsyncSessionLocal() as session:
         rows = (await session.execute(select(DecisionTrace.decision_id))).all()
         return len(rows)
+
+
+async def count_demo_decisions() -> int:
+    """How many seeded/sample decision rows exist (workflow_id LIKE 'demo-%')."""
+    async with AsyncSessionLocal() as session:
+        rows = (
+            await session.execute(
+                select(DecisionTrace.decision_id).where(
+                    DecisionTrace.workflow_id.like(f"{DEMO_PREFIX}%")
+                )
+            )
+        ).all()
+        return len(rows)
+
+
+async def delete_demo_decisions() -> int:
+    """Delete ONLY seeded/sample decision rows (workflow_id LIKE 'demo-%').
+
+    Live captures use a real workflow_id and are never matched, so this can't
+    touch real data. Returns the number of rows removed.
+    """
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            delete(DecisionTrace).where(DecisionTrace.workflow_id.like(f"{DEMO_PREFIX}%"))
+        )
+        await session.commit()
+        return result.rowcount or 0

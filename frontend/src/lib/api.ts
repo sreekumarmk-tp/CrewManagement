@@ -253,7 +253,11 @@ export const decisionApi = {
     api.get<DecisionTrace>(`/decisions/${id}`).then(r => r.data),
 
   seedDemo: () =>
-    api.post<{ seeded: number; decisions: DecisionTrace[] }>("/decisions/demo-seed").then(r => r.data),
+    api.post<{ seeded: number; already_present: boolean; decisions: DecisionTrace[] }>("/decisions/demo-seed").then(r => r.data),
+
+  // Removes ONLY seeded/sample rows (demo- workflow ids); live data is preserved.
+  clearDemo: () =>
+    api.delete<{ decisions_removed: number; precedents_removed: number }>("/decisions/demo-seed").then(r => r.data),
 };
 
 // ── Pattern Detection (L4 #4) ──────────────────────────────────────────────────

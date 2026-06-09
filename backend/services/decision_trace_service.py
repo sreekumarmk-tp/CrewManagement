@@ -21,10 +21,13 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional
 import structlog
 
 from database.decision_repository import (
+    count_demo_decisions,
+    delete_demo_decisions,
     insert_decision,
     list_decisions,
     update_outcome_by_workflow,
 )
+from database.precedent_repository import delete_demo_precedents
 from database.models import WorkflowState
 from services.precedent_service import precedent_service
 
@@ -248,12 +251,43 @@ class DecisionTraceService:
 
     # ── Demo seeding ──────────────────────────────────────────────────────────────
 
+    async def clear_demo(self) -> dict:
+        """Remove ONLY seeded/sample rows (workflow_id LIKE 'demo-%') from both the
+        decision-trace and precedent stores. Live placements use a real workflow_id
+        and are never matched, so real precedent history is preserved. Never raises."""
+        try:
+            decisions_removed = await delete_demo_decisions()
+            precedents_removed = await delete_demo_precedents()
+            log.info(
+                "decision.clear_demo",
+                decisions=decisions_removed, precedents=precedents_removed,
+            )
+            return {
+                "decisions_removed": decisions_removed,
+                "precedents_removed": precedents_removed,
+            }
+        except Exception:
+            log.warning("decision.clear_demo.failed", exc_info=True)
+            return {"decisions_removed": 0, "precedents_removed": 0}
+
     async def seed_demo(self) -> dict:
         """Insert realistic mock decisions so the L4 view has data before any live
         workflow has run. Processed IN ORDER so the Precedent Index builds up: each
         decision consults the precedents recorded by the earlier ones, then (if
         completed) records its own — so a later decision with a repeated vacancy
-        profile shows up as a 2nd+ query. Each call adds fresh rows."""
+        profile shows up as a 2nd+ query.
+
+        IDEMPOTENT: if sample data is already present, it is NOT re-inserted (so
+        repeated seeding can't pile up duplicate rows); the existing sample set is
+        returned for replay instead. Use clear_demo() to remove it first if you want
+        a fresh batch."""
+        if await count_demo_decisions() > 0:
+            existing = [
+                d for d in await list_decisions(limit=200)
+                if (d.get("workflow_id") or "").startswith("demo-")
+            ]
+            log.info("decision.seed_demo.already_present", count=len(existing))
+            return {"seeded": 0, "already_present": True, "decisions": existing}
         seeded = []
         for spec in _DEMO_DECISIONS:
             dep = spec["departing"]
@@ -268,7 +302,7 @@ class DecisionTraceService:
             if spec["outcome_status"] in ("signed_on", "rejected"):
                 await precedent_service.record_placement(stored)
         log.info("decision.seed_demo", count=len(seeded))
-        return {"seeded": len(seeded), "decisions": seeded}
+        return {"seeded": len(seeded), "already_present": False, "decisions": seeded}
 
     def _mock_record(self, spec: Dict[str, Any], precedent: Dict[str, Any]) -> dict:
         return {
