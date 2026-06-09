@@ -84,6 +84,36 @@ async def update_outcome_by_workflow(
         return row.to_dict()
 
 
+async def update_progress_by_workflow(
+    workflow_id: str,
+    *,
+    attempts: list,
+    pending_reason: Optional[str] = None,
+) -> Optional[dict]:
+    """Persist the in-progress rejection-retry journey WITHOUT resolving the outcome.
+
+    Lets a client that lands on the Decisions tab mid-run (or missed a live event)
+    read the current attempt chain from the DB: the row stays `pending` (outcome_status
+    and resolved_at are untouched) until `update_outcome_by_workflow` stamps the final
+    verdict. Updates the most recent decision for the workflow; returns it, or None.
+    """
+    async with AsyncSessionLocal() as session:
+        row = (
+            await session.execute(
+                select(DecisionTrace)
+                .where(DecisionTrace.workflow_id == workflow_id)
+                .order_by(DecisionTrace.created_at.desc())
+            )
+        ).scalars().first()
+        if row is None:
+            return None
+        row.attempts = attempts
+        if pending_reason is not None:
+            row.pending_reason = pending_reason
+        await session.commit()
+        return row.to_dict()
+
+
 async def list_decisions(limit: int = 50) -> list[dict]:
     """Most-recent-first list of captured decisions (lightweight — full trace via get)."""
     async with AsyncSessionLocal() as session:

@@ -30,7 +30,24 @@ import ReactFlow, {
 } from "reactflow";
 import "reactflow/dist/style.css";
 import { GitBranch } from "lucide-react";
-import type { DecisionTrace } from "@/types";
+import type { ComplianceAttempt, DecisionTrace } from "@/types";
+
+// Mirrors backend MAX_SIGNON_ATTEMPTS — how many ranked candidates the orchestrator
+// tries (top match + fallbacks) before recording a final rejection. The live graph
+// shows this many candidates up front so the full queue is visible from the start.
+const MAX_LIVE_CANDIDATES = 3;
+
+// One candidate as rendered on the retry chain. `status` unifies the live lifecycle
+// (queued → checking → passed | warning | failed) so the same builder draws both the
+// live queue and a completed attempts journey.
+type RenderCandidate = {
+  crew_id?: string;
+  name?: string;
+  rank?: string;
+  status: string;
+  score?: number | null;
+  failures?: string[];
+};
 
 type NodeKind = "query" | "decision" | "chosen" | "alt" | "outcome" | "attempt";
 
@@ -56,6 +73,8 @@ const STATUS_COLOR: Record<string, string> = {
   passed: "#22c55e",
   warning: "#f59e0b",
   failed: "#ef4444",
+  checking: "#00d4ff",   // live — candidate's documents being validated
+  queued: "#64748b",     // live — in line, not yet validated
 };
 
 interface DGNodeData {
@@ -116,15 +135,45 @@ export default function DecisionGraph({
   decision: DecisionTrace | null;
   onOutcomeRevealed?: (decisionId: string) => void;
 }) {
-  // A retry happened when the sign-off went through ≥2 compliance attempts.
   const attempts = useMemo(() => decision?.attempts ?? [], [decision]);
-  const retryMode = attempts.length >= 2;
 
-  // Last stage index varies. Default flow tops out at 4. The retry LOOP reveals two
-  // steps per attempt — the candidate is selected by L3 (stage 2+2i), then its
-  // verdict either loops back to L3 as feedback or reaches the outcome (stage 3+2i)
-  // — so the final outcome lands at 2n+1.
-  const maxStage = retryMode ? 2 * attempts.length + 1 : 4;
+  // The candidate queue the orchestrator works through, best-first (the top match plus
+  // its ranked fallbacks). Shown in FULL from the start so every crew member is visible
+  // up front and the flow then proceeds one-by-one — queued → validating → rejected →
+  // next — mirroring the seed-data walkthrough, instead of a candidate appearing only
+  // once the prior one is rejected.
+  const queue = useMemo(() => buildLiveQueue(decision), [decision]);
+
+  // LIVE = the placement is still pending but candidates are already being tried. While
+  // live the graph mirrors the CURRENT state as events arrive (no staged replay): the
+  // active candidate pulses "Validating…", rejected ones turn red and loop back to L3,
+  // and the candidates still in line sit "Queued".
+  const live = decision?.outcome_status === "pending" && attempts.length > 0;
+
+  // While live the full queue drives the layout; once resolved we fall back to the
+  // actual attempts journey (matches the completed / seed view).
+  const candidates = useMemo<RenderCandidate[]>(() => {
+    if (!retryFromAttempts(attempts, live, queue)) return [];
+    return live
+      ? queue
+      : attempts.map((a) => ({
+          crew_id: a.crew_id,
+          name: a.name,
+          rank: a.rank,
+          status: a.compliance_status || "failed",
+          score: a.compliance_score ?? null,
+          failures: a.failures || [],
+        }));
+  }, [attempts, live, queue]);
+
+  const retryMode = candidates.length > 0;
+  const chainLen = candidates.length;
+
+  // Default flow tops out at 4. The retry LOOP budgets two stages per candidate
+  // (selected by L3, then its verdict). Live shows everything at once, so maxStage just
+  // needs to cover every node + loop-back (2·len+1); completed reveals stage by stage
+  // up to the outcome node at 2n+1.
+  const maxStage = retryMode ? 2 * chainLen + 1 : 4;
 
   // Reveal stage, COUPLED to the decision it belongs to (a stale id counts as 0 so
   // nothing reveals early when the walkthrough advances to the next decision).
@@ -133,6 +182,14 @@ export default function DecisionGraph({
 
   useEffect(() => {
     if (!decisionId) return;
+    // Live: jump straight to the frontier so the whole queue is visible at once and
+    // each status change shows the moment its event lands (a growing chain never
+    // restarts the reveal from zero).
+    if (live) {
+      setReveal({ id: decisionId, stage: maxStage });
+      return;
+    }
+    // Completed: reveal stage by stage so the viewer follows query → … → outcome.
     setReveal({ id: decisionId, stage: 0 });
     const timers: ReturnType<typeof setTimeout>[] = [];
     for (let s = 1; s <= maxStage; s++) {
@@ -144,21 +201,24 @@ export default function DecisionGraph({
       );
     }
     return () => timers.forEach(clearTimeout);
-  }, [decisionId, maxStage]);
+  }, [decisionId, maxStage, live]);
 
   const stage = reveal.id === decisionId ? reveal.stage : 0;
 
   useEffect(() => {
-    if (decisionId && reveal.id === decisionId && reveal.stage >= maxStage) {
+    // Reveal the (final) outcome label only once the decision has actually resolved —
+    // never while it's still live/pending (its outcome is not yet known).
+    if (!live && decisionId && reveal.id === decisionId && reveal.stage >= maxStage) {
       onOutcomeRevealed?.(decisionId);
     }
-  }, [reveal, decisionId, onOutcomeRevealed, maxStage]);
+  }, [reveal, decisionId, onOutcomeRevealed, maxStage, live]);
 
-  // Build the full graph (with per-node stage tags) — only when the decision changes.
+  // Build the full graph (with per-node stage tags) — rebuilds as the decision (and,
+  // while live, its candidate statuses) change.
   const base = useMemo(() => {
     if (!decision) return { nodes: [] as Node<DGNodeData>[], edges: [] as Edge[] };
-    return retryMode ? buildRetryGraph(decision) : buildDefaultGraph(decision);
-  }, [decision, retryMode]);
+    return retryMode ? buildRetryGraph(decision, candidates, live) : buildDefaultGraph(decision);
+  }, [decision, retryMode, candidates, live]);
 
   // Apply the current reveal stage: nodes fade in by stage; an edge shows once both
   // its endpoints are visible.
@@ -197,10 +257,17 @@ export default function DecisionGraph({
   let stageLabels: string[];
   if (retryMode) {
     stageLabels = ["Query", "Decision · L3"];
-    attempts.forEach((a, i) => {
-      stageLabels.push(`Attempt ${i + 1}`);
-      const passed = a.compliance_status === "passed" || a.compliance_status === "warning";
-      stageLabels.push(i === attempts.length - 1 || passed ? "Outcome" : "Feedback → L3");
+    candidates.forEach((c, i) => {
+      stageLabels.push(`Candidate ${i + 1}`);
+      const passed = c.status === "passed" || c.status === "warning";
+      const checking = c.status === "checking";
+      const queued = c.status === "queued";
+      stageLabels.push(
+        checking ? "Validating…"
+          : queued ? "Queued"
+          : live ? "Feedback → L3"
+          : i === candidates.length - 1 || passed ? "Outcome" : "Feedback → L3"
+      );
     });
   } else {
     stageLabels = ["Query", "Decision", "Chosen crew", "Alternatives", "Outcome"];
@@ -213,9 +280,15 @@ export default function DecisionGraph({
           <GitBranch className="w-4 h-4 text-ocean-accent" />
           <h3 className="text-sm font-semibold text-white">Decision Graph</h3>
           {retryMode && (
-            <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30">
-              {attempts.length} attempts
-            </span>
+            live ? (
+              <span className="flex items-center gap-1 text-[9px] font-semibold px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-300 border border-cyan-500/30">
+                <i className="w-1.5 h-1.5 rounded-full bg-cyan-300 animate-pulse" /> live · {candidates.length} candidates
+              </span>
+            ) : (
+              <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                {attempts.length} attempts
+              </span>
+            )
           )}
           <span className="text-[10px] text-ocean-accent/80">
             · {stageLabels[Math.min(stage, maxStage)]}
@@ -247,6 +320,12 @@ export default function DecisionGraph({
             <span className="flex items-center gap-1"><i className="w-2 h-2 rounded-full" style={{ background: STATUS_COLOR.failed }} /> Rejected attempt</span>
             <span className="flex items-center gap-1"><i className="w-2 h-2 rounded-full" style={{ background: STATUS_COLOR.passed }} /> Cleared / signed on</span>
             <span className="flex items-center gap-1"><i className="w-2 h-2 rounded-full" style={{ background: STATUS_COLOR.warning }} /> Conditional</span>
+            {live && (
+              <>
+                <span className="flex items-center gap-1"><i className="w-2 h-2 rounded-full animate-pulse" style={{ background: STATUS_COLOR.checking }} /> Validating</span>
+                <span className="flex items-center gap-1"><i className="w-2 h-2 rounded-full" style={{ background: STATUS_COLOR.queued }} /> Queued</span>
+              </>
+            )}
           </>
         ) : (
           <>
@@ -340,13 +419,68 @@ function buildDefaultGraph(decision: DecisionTrace): { nodes: Node<DGNodeData>[]
   return { nodes: n, edges: e };
 }
 
+// The candidate queue to render WHILE LIVE: the ranked candidates the orchestrator
+// will try (top match + fallbacks), shown in full from the start, with each one's
+// current live status overlaid from the attempts array (keyed by crew_id). Candidates
+// not yet reached are "queued"; the active one is "checking"; tried ones carry their
+// verdict.
+function buildLiveQueue(decision: DecisionTrace | null): RenderCandidate[] {
+  if (!decision) return [];
+  const attempts = decision.attempts || [];
+  const chosen = decision.chosen_crew || {};
+  const alts = decision.alternatives || [];
+
+  // Best-first, deduped by crew_id: top match, then ranked fallbacks.
+  const ranked: { crew_id?: string; name?: string; rank?: string }[] = [];
+  const seen = new Set<string>();
+  for (const c of [chosen, ...alts]) {
+    const id = c?.crew_id;
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    ranked.push({ crew_id: id, name: c.name, rank: c.rank });
+  }
+
+  const queue: RenderCandidate[] = ranked.slice(0, MAX_LIVE_CANDIDATES).map((c) => {
+    const a = attempts.find((at) => at.crew_id === c.crew_id);
+    return {
+      crew_id: c.crew_id,
+      name: c.name,
+      rank: c.rank,
+      status: a?.compliance_status || "queued",
+      score: a?.compliance_score ?? null,
+      failures: a?.failures || [],
+    };
+  });
+
+  // Never hide a real attempt that isn't in the ranked list (ordering quirks / a crew
+  // tried but absent from chosen+alternatives).
+  attempts.forEach((a) => {
+    if (a.crew_id && !queue.some((q) => q.crew_id === a.crew_id)) {
+      queue.push({
+        crew_id: a.crew_id, name: a.name, rank: a.rank,
+        status: a.compliance_status || "failed",
+        score: a.compliance_score ?? null, failures: a.failures || [],
+      });
+    }
+  });
+
+  return queue;
+}
+
+// The retry-chain view is used when the placement is LIVE (≥1 queued candidate to
+// show) or, once completed, when it actually went through ≥2 attempts. A completed
+// single-attempt decision keeps the simpler default graph.
+function retryFromAttempts(attempts: ComplianceAttempt[], live: boolean, queue: RenderCandidate[]): boolean {
+  return live ? queue.length >= 1 : attempts.length >= 2;
+}
+
 // ── Retry graph — an L3-centered LOOP, not a straight line. Candidates branch from
 // the Decision (L3) node; a rejected candidate loops a "feedback to L3" edge back to
 // it, and L3 then selects the next-ranked candidate. The first to clear connects to
-// the Outcome; if all fail, the last connects to a Rejected outcome.
-function buildRetryGraph(decision: DecisionTrace): { nodes: Node<DGNodeData>[]; edges: Edge[] } {
-  const attempts = decision.attempts || [];
-  const n = attempts.length;
+// the Outcome; if all fail, the last connects to a Rejected outcome. While live the
+// full ranked queue is shown up front (still-queued candidates dimmed).
+function buildRetryGraph(decision: DecisionTrace, candidates: RenderCandidate[], live = false): { nodes: Node<DGNodeData>[]; edges: Edge[] } {
+  const n = candidates.length;
   const outcomeColor = OUTCOME_COLOR[decision.outcome_status] || OUTCOME_COLOR.pending;
   const dep = decision.query_context?.departing_crew || {};
 
@@ -376,38 +510,64 @@ function buildRetryGraph(decision: DecisionTrace): { nodes: Node<DGNodeData>[]; 
   });
   edges.push(mkEdge("e-q-d", "query", "decision", "triggers", KIND_ACCENT.query, 1));
 
-  // The candidate that clears is always the LAST attempt (the loop breaks on a pass).
-  const last = attempts[n - 1] || {};
-  const accepted = last.compliance_status === "passed" || last.compliance_status === "warning";
+  // The candidate that clears is always the LAST one (the loop breaks on a pass).
+  const last = candidates[n - 1] || ({} as RenderCandidate);
+  const accepted = last.status === "passed" || last.status === "warning";
   const connectIdx = n - 1;
 
-  attempts.forEach((a, i) => {
-    const status = a.compliance_status || "failed";
+  candidates.forEach((c, i) => {
+    const status = c.status || "failed";
     const color = STATUS_COLOR[status] || STATUS_COLOR.failed;
     const passed = status === "passed" || status === "warning";
+    const checking = status === "checking";   // live, in-progress candidate
+    const queued = status === "queued";        // live, still in line
+    const failed = status === "failed";
     const id = `att-${i}`;
     const nodeStage = 2 + 2 * i;     // L3 selects this candidate
     const resStage = 3 + 2 * i;      // its verdict resolves (loop-back or outcome)
 
+    const subLabel = passed
+      ? "Cleared compliance"
+      : checking
+      ? "Validating…"
+      : queued
+      ? "Queued"
+      : "Rejected";
+
     nodes.push({
       id, type: "dgNode", position: { x: 620, y: 30 + i * ROW },
       data: {
-        tag: i === 0 ? "Attempt 1 · top match" : `Attempt ${i + 1} · retry`,
-        kind: "attempt", ring: color, accent: color, glow: passed, stage: nodeStage, visible: true,
-        label: a.name || a.crew_id,
-        sub: `${passed ? "Cleared compliance" : "Rejected"}${a.compliance_score != null ? ` · ${a.compliance_score}%` : ""}`,
+        tag: i === 0 ? "Candidate 1 · top match" : `Candidate ${i + 1} · fallback`,
+        kind: "attempt", ring: color, accent: color, glow: passed || checking,
+        dim: queued, stage: nodeStage, visible: true,
+        label: c.name || c.crew_id || "Candidate",
+        sub: `${subLabel}${c.score != null ? ` · ${c.score}%` : ""}`,
       },
     });
 
-    // Forward edge: L3 selects this candidate.
-    edges.push(mkEdge(
-      `e-d-${id}`, "decision", id,
-      i === 0 ? "selects #1" : `selects #${i + 1}`,
-      KIND_ACCENT.decision, nodeStage, true,
-    ));
+    // Forward edge L3 → candidate. A processed/active candidate is "selected" (solid,
+    // animated); a still-queued one is shown ranked-but-waiting (dim, dashed, static).
+    if (queued) {
+      edges.push({
+        id: `e-d-${id}`, source: "decision", target: id, label: `ranked #${i + 1}`,
+        data: { stage: nodeStage },
+        style: { stroke: STATUS_COLOR.queued, strokeWidth: 1.25, strokeDasharray: "4 3", opacity: 0.7 },
+        labelStyle: { fill: STATUS_COLOR.queued, fontSize: 8 },
+        labelBgStyle: { fill: "#0a1628", fillOpacity: 0.7 },
+        markerEnd: { type: MarkerType.ArrowClosed, color: STATUS_COLOR.queued },
+      });
+    } else {
+      edges.push(mkEdge(
+        `e-d-${id}`, "decision", id,
+        i === 0 ? "selects #1" : `selects #${i + 1}`,
+        KIND_ACCENT.decision, nodeStage, true,
+      ));
+    }
 
-    // Rejected (and not the final candidate) → feedback loop back to L3.
-    if (!passed && i < n - 1) {
+    // A rejected candidate routes back to L3 to pick the next-best. While live the
+    // most-recent rejection also loops (we're between candidates, awaiting the next);
+    // once resolved the final attempt connects to the outcome instead (handled below).
+    if (failed && (i < n - 1 || live)) {
       edges.push({
         id: `e-${id}-loop`, source: id, sourceHandle: "loopOut",
         target: "decision", targetHandle: "loopIn",
@@ -421,30 +581,33 @@ function buildRetryGraph(decision: DecisionTrace): { nodes: Node<DGNodeData>[]; 
     }
   });
 
-  // Outcome node, connected from the candidate that resolved the loop (the one that
-  // cleared, or the last one if all failed).
-  const outcomeStage = 3 + 2 * connectIdx;
-  const outcomeLabel = decision.outcome_status === "signed_on"
-    ? "Signed On"
-    : decision.outcome_status === "rejected"
-    ? "Rejected"
-    : "Pending";
-  nodes.push({
-    id: "outcome", type: "dgNode", position: { x: 980, y: 30 + connectIdx * ROW },
-    data: {
-      tag: "Outcome", kind: "outcome", ring: outcomeColor, accent: outcomeColor, glow: true,
-      stage: outcomeStage, visible: true,
-      label: outcomeLabel,
-      sub: decision.compliance_status
-        ? `Compliance: ${decision.compliance_status}${decision.compliance_score != null ? ` (${decision.compliance_score}%)` : ""}`
-        : undefined,
-    },
-  });
-  edges.push(mkEdge(
-    "e-att-o", `att-${connectIdx}`, "outcome",
-    accepted ? "signed on" : "rejected", outcomeColor, outcomeStage,
-    decision.outcome_status === "pending",
-  ));
+  // No resolved outcome node while live — the frontier is the in-progress (or
+  // just-rejected, awaiting-next) candidate. The outcome appears only once the
+  // placement actually resolves to signed_on / rejected.
+  if (!live) {
+    const outcomeStage = 3 + 2 * connectIdx;
+    const outcomeLabel = decision.outcome_status === "signed_on"
+      ? "Signed On"
+      : decision.outcome_status === "rejected"
+      ? "Rejected"
+      : "Pending";
+    nodes.push({
+      id: "outcome", type: "dgNode", position: { x: 980, y: 30 + connectIdx * ROW },
+      data: {
+        tag: "Outcome", kind: "outcome", ring: outcomeColor, accent: outcomeColor, glow: true,
+        stage: outcomeStage, visible: true,
+        label: outcomeLabel,
+        sub: decision.compliance_status
+          ? `Compliance: ${decision.compliance_status}${decision.compliance_score != null ? ` (${decision.compliance_score}%)` : ""}`
+          : undefined,
+      },
+    });
+    edges.push(mkEdge(
+      "e-att-o", `att-${connectIdx}`, "outcome",
+      accepted ? "signed on" : "rejected", outcomeColor, outcomeStage,
+      decision.outcome_status === "pending",
+    ));
+  }
 
   return { nodes, edges };
 }

@@ -16,7 +16,7 @@ import toast, { Toaster } from "react-hot-toast";
 import {
   Anchor, Ship, Activity, BarChart3, GitBranch, Wifi, WifiOff,
   RefreshCw, Sparkles, CheckCircle, XCircle, Clock, ChevronRight, Cpu, Wrench,
-  Play, Square, AlertTriangle, RotateCcw, Share2,
+  Play, Square, AlertTriangle, RotateCcw, Share2, Loader2,
 } from "lucide-react";
 
 import { decisionApi } from "@/lib/api";
@@ -146,6 +146,48 @@ export default function DecisionsPage() {
           { icon: "📚" }
         );
       }
+      return;
+    }
+
+    // Live retry-loop progress: build the in-progress attempt chain on the matching
+    // decision as each event lands, so the Decision Graph reflects each candidate's
+    // status the moment it changes — candidate selected (auto_compliance, "checking")
+    // → rejected (sign_on_attempt_rejected, "failed") → next candidate — rather than
+    // sitting on "Pending" until the final verdict. The outcome stays pending here;
+    // the terminal crew_signed_on / sign_on_rejected event (below) closes it out.
+    if (latest.event_type === "auto_compliance" || latest.event_type === "sign_on_attempt_rejected") {
+      const wfId = (latest.workflow_id as string) || (data.workflow_id as string) || "";
+      const order = (data.attempt as number) || 0;
+      if (!wfId || !order) return;
+      const isReject = latest.event_type === "sign_on_attempt_rejected";
+      const entry: ComplianceAttempt = isReject
+        ? {
+            order,
+            crew_id: data.crew_id as string,
+            name: data.crew_name as string,
+            rank: data.crew_rank as string,
+            compliance_status: (data.compliance_status as string) || "failed",
+            compliance_score: data.compliance_score as number,
+            failures: (data.failures as string[]) || [],
+          }
+        : {
+            order,
+            crew_id: data.candidate_id as string,
+            name: data.candidate_name as string,
+            rank: data.candidate_rank as string,
+            compliance_status: "checking",
+          };
+      const upsert = (d: DecisionTrace): DecisionTrace => {
+        if (d.workflow_id !== wfId) return d;
+        const prev = d.attempts ?? [];
+        const at = prev.findIndex((a) => a.order === order);
+        const attempts =
+          at >= 0
+            ? prev.map((a, i) => (i === at ? { ...a, ...entry } : a))
+            : [...prev, entry].sort((a, b) => a.order - b.order);
+        return { ...d, attempts, outcome_status: "pending" };
+      };
+      setDecisions((prev) => prev.map(upsert));
       return;
     }
 
@@ -540,6 +582,8 @@ const ATTEMPT_STYLE: Record<string, { color: string; icon: React.ReactNode; labe
   passed: { color: "#22c55e", icon: <CheckCircle className="w-3.5 h-3.5" />, label: "Passed" },
   warning: { color: "#f59e0b", icon: <AlertTriangle className="w-3.5 h-3.5" />, label: "Warning" },
   failed: { color: "#ef4444", icon: <XCircle className="w-3.5 h-3.5" />, label: "Failed" },
+  // Live, in-progress attempt — the candidate's documents are being validated.
+  checking: { color: "#00d4ff", icon: <Loader2 className="w-3.5 h-3.5 animate-spin" />, label: "Validating…" },
 };
 
 function ComplianceAttempts({ attempts }: { attempts: ComplianceAttempt[] }) {
