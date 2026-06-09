@@ -107,6 +107,21 @@ AGENT_COMPLETED_TO_ACTIVITY: Dict[str, str] = {
     "Compliance Agent": "Compliance Check",
 }
 
+# Who performs each activity — the actor shown on the reference (designed) process map,
+# where there are no mined case counts to label a node with. Mirrors the actors the
+# mined events carry (record_event stores the live actor per case).
+ACTIVITY_ACTOR: Dict[str, str] = {
+    "Sign-Off Initiated": "Master Agent",
+    "Crew Matching": "Crew Matching Agent",
+    "Travel Arranged": "Travel Agent",
+    "Crew Notified": "Notification Agent",
+    "Sign-Off Confirmed": "Master Agent",
+    "Compliance Check": "Compliance Agent",
+    "Signed On": "Compliance Agent",
+    "Sign-On Rejected": "Compliance Agent",
+    "Workflow Failed": "Master Agent",
+}
+
 
 # ── Event log (the "case" store) ──────────────────────────────────────────────────
 #
@@ -293,6 +308,72 @@ def build_process_graph() -> Dict[str, Any]:
             "total_transitions": len(edges),
             "avg_cycle_time_seconds": round(sum(cycle_times) / len(cycle_times), 2) if cycle_times else 0.0,
             "avg_cycle_time_human": _human_duration(sum(cycle_times) / len(cycle_times)) if cycle_times else "—",
+        },
+    }
+
+
+def reference_process_model() -> Dict[str, Any]:
+    """The **reference (normative) process map** — the crew-change flow as DESIGNED,
+    independent of any mined data. Where build_process_graph() discovers how work
+    *actually* moved (and is empty until cases run), this returns the intended flow so
+    a process map can always be shown: the happy path, the three specialists as a
+    parallel block, and the compliance exception/error branches.
+
+    Same `{dimension, nodes, edges, metrics}` envelope as build_process_graph() so the
+    existing OpsMapGraph UI renders it with no new client contract. Edges additionally
+    carry a `kind` (`happy` | `parallel` | `exception` | `error`) and nodes an `actor`,
+    since there are no case counts to label the designed model with. Derived from
+    HAPPY_PATH / _PARALLEL_BLOCK so the reference stays in step with the conformance
+    definition; the terminal exception branches are defined explicitly.
+    """
+    spine = [a for a in HAPPY_PATH if a not in _PARALLEL_BLOCK]  # Initiated→Confirmed→Compliance→Signed On
+    pre, post = "Sign-Off Initiated", "Sign-Off Confirmed"       # the parallel block sits between these
+    block = [a for a in HAPPY_PATH if a in _PARALLEL_BLOCK]
+
+    edges: List[Dict[str, Any]] = []
+
+    def _add(a: str, b: str, kind: str, label: str = "") -> None:
+        edges.append({
+            "id": f"{a}->{b}", "source": a, "target": b,
+            "count": 0, "avg_seconds": 0.0, "label": label, "kind": kind,
+        })
+
+    # Happy spine — but the direct pre→post hop is replaced by the parallel block.
+    for a, b in zip(spine, spine[1:]):
+        if (a, b) == (pre, post):
+            continue
+        _add(a, b, "happy", "pass" if (a, b) == ("Compliance Check", "Signed On") else "")
+    # Parallel specialist block: fan out from `pre`, fan back in to `post`.
+    for p in block:
+        _add(pre, p, "parallel")
+        _add(p, post, "parallel")
+    # Exception / error terminals branch off the compliance decision point.
+    _add("Compliance Check", "Sign-On Rejected", "exception", "fail")
+    _add("Compliance Check", "Workflow Failed", "error", "error")
+
+    def _rank(a: str) -> int:
+        return ACTIVITIES.index(a) if a in ACTIVITIES else len(ACTIVITIES)
+
+    activities = sorted(set(HAPPY_PATH) | {"Sign-On Rejected", "Workflow Failed"}, key=_rank)
+    nodes = [
+        {
+            "id": a, "type": "Activity", "label": a,
+            "cases": 0, "terminal": a in _TERMINAL,
+            "actor": ACTIVITY_ACTOR.get(a, "Master Agent"),
+        }
+        for a in activities
+    ]
+    return {
+        "dimension": "OpsMap",
+        "model": "reference",
+        "nodes": nodes,
+        "edges": edges,
+        "metrics": {
+            "total_cases": 0,
+            "total_activities": len(nodes),
+            "total_transitions": len(edges),
+            "avg_cycle_time_seconds": 0.0,
+            "avg_cycle_time_human": "—",
         },
     }
 

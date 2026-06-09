@@ -6,11 +6,12 @@
  * panels. The log fills as crew-change workflows run, so it offers a refresh and an
  * empty state that points the user at the Dashboard.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import toast from "react-hot-toast";
 import {
   Activity, RefreshCw, Loader2, GitBranch, Timer, CheckCircle2, Route,
   AlertTriangle, XCircle, X, ArrowRight, ArrowLeft, Zap, User, Users, Ship,
+  Workflow, Compass,
 } from "lucide-react";
 
 import {
@@ -69,8 +70,13 @@ const ACTIVITY_META: Record<string, { event: string; actor: string; about: strin
   },
 };
 
+// Which process map is on screen: the mined ("discovered") model or the designed
+// ("reference") one. The reference map always shows the full flow — even with 0 cases.
+type MapMode = "discovered" | "reference";
+
 export default function OpsMapView() {
   const [process, setProcess] = useState<OpsMapProcess | null>(null);
+  const [reference, setReference] = useState<OpsMapProcess | null>(null);
   const [summary, setSummary] = useState<OpsMapSummary | null>(null);
   const [variants, setVariants] = useState<OpsMapVariants | null>(null);
   const [bottlenecks, setBottlenecks] = useState<OpsMapBottlenecks | null>(null);
@@ -78,19 +84,29 @@ export default function OpsMapView() {
   const [cases, setCases] = useState<OpsMapCases | null>(null);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<string | null>(null);
+  const [mapMode, setMapMode] = useState<MapMode>("discovered");
+  const didAutoSwitch = useRef(false);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [p, s, v, b, c, cs] = await Promise.all([
+      const [p, r, s, v, b, c, cs] = await Promise.all([
         opsMapApi.getProcess(),
+        opsMapApi.getReference(),
         opsMapApi.getSummary(),
         opsMapApi.getVariants(),
         opsMapApi.getBottlenecks(5),
         opsMapApi.getConformance(),
         opsMapApi.getCases(),
       ]);
-      setProcess(p); setSummary(s); setVariants(v); setBottlenecks(b); setConformance(c); setCases(cs);
+      setProcess(p); setReference(r); setSummary(s);
+      setVariants(v); setBottlenecks(b); setConformance(c); setCases(cs);
+      // First load with no mined cases: open on the reference (designed) flow so the
+      // page always shows the process, not an empty canvas. Respects a later manual pick.
+      if (!didAutoSwitch.current) {
+        didAutoSwitch.current = true;
+        if (p.metrics.total_cases === 0) setMapMode("reference");
+      }
     } catch {
       toast.error("Failed to load OpsMap");
     } finally {
@@ -101,6 +117,7 @@ export default function OpsMapView() {
   useEffect(() => { load(); }, [load]);
 
   const empty = !!process && process.metrics.total_cases === 0;
+  const showReference = mapMode === "reference";
   const topBottleneck = bottlenecks?.bottlenecks[0];
   const bottleneckEdgeId = topBottleneck ? `${topBottleneck.from}->${topBottleneck.to}` : null;
 
@@ -139,20 +156,25 @@ export default function OpsMapView() {
           <Chip icon={<CheckCircle2 className="w-3.5 h-3.5" />} label="Conformance" value={`${summary?.conformance_rate ?? 0}%`} />
           <Chip icon={<Timer className="w-3.5 h-3.5" />} label="Avg cycle" value={summary?.avg_cycle_time_human ?? "—"} />
         </div>
-        <button
-          onClick={load}
-          disabled={loading}
-          className="flex items-center gap-2 px-3 py-2 rounded-xl text-sm text-gray-300 hover:text-white bg-ocean-card border border-ocean-border/60 hover:border-ocean-accent/50 transition disabled:opacity-60"
-        >
-          {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
-          Refresh
-        </button>
+        <div className="flex items-center gap-2">
+          <MapModeToggle mode={mapMode} onChange={setMapMode} minedCases={summary?.total_cases ?? 0} />
+          <button
+            onClick={load}
+            disabled={loading}
+            className="flex items-center gap-2 px-3 py-2 rounded-xl text-sm text-gray-300 hover:text-white bg-ocean-card border border-ocean-border/60 hover:border-ocean-accent/50 transition disabled:opacity-60"
+          >
+            {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+            Refresh
+          </button>
+        </div>
       </div>
 
       {loading && !process ? (
         <div className="h-[560px] flex items-center justify-center text-gray-500">
           <Loader2 className="w-6 h-6 animate-spin text-ocean-accent" />
         </div>
+      ) : showReference ? (
+        <ReferenceMapView reference={reference} minedCases={summary?.total_cases ?? 0} />
       ) : empty ? (
         <div className="glass rounded-2xl border border-ocean-border/50 p-10 text-center">
           <Route className="w-10 h-10 text-ocean-accent/50 mx-auto mb-3" />
@@ -162,6 +184,12 @@ export default function OpsMapView() {
             Run a sign-off from the <span className="text-ocean-accent">Dashboard</span> — each
             completed workflow adds one case — then hit Refresh.
           </p>
+          <button
+            onClick={() => setMapMode("reference")}
+            className="mt-4 inline-flex items-center gap-2 px-3.5 py-2 rounded-xl text-sm text-ocean-accent bg-ocean-accent/10 border border-ocean-accent/40 hover:bg-ocean-accent/20 transition"
+          >
+            <Compass className="w-4 h-4" /> View the designed flow
+          </button>
         </div>
       ) : (
         <div className="flex flex-col xl:flex-row gap-4">
@@ -201,6 +229,134 @@ function activityColor(label: string, terminal: boolean): string {
   if (label === "Sign-On Rejected") return "#f59e0b";
   if (label === "Workflow Failed") return "#ef4444";
   return terminal ? "#94a3b8" : "#3b82f6";
+}
+
+// ── Discovered ⇄ Reference toggle ──────────────────────────────────────────────────
+function MapModeToggle({
+  mode, onChange, minedCases,
+}: { mode: MapMode; onChange: (m: MapMode) => void; minedCases: number }) {
+  const opts: { key: MapMode; label: string; icon: React.ReactNode; title: string }[] = [
+    { key: "discovered", label: "Discovered", icon: <Activity className="w-3.5 h-3.5" />, title: "The process mined from real workflow events" },
+    { key: "reference", label: "Reference", icon: <Compass className="w-3.5 h-3.5" />, title: "The designed crew-change flow (always shown)" },
+  ];
+  return (
+    <div className="flex items-center rounded-xl border border-ocean-border/60 bg-ocean-card p-0.5">
+      {opts.map((o) => {
+        const active = mode === o.key;
+        return (
+          <button
+            key={o.key}
+            onClick={() => onChange(o.key)}
+            title={o.title}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition ${
+              active
+                ? "bg-ocean-accent/20 text-white border border-ocean-accent/50"
+                : "text-gray-400 hover:text-white border border-transparent"
+            }`}
+          >
+            {o.icon}
+            {o.label}
+            {o.key === "discovered" && <span className="text-[10px] text-gray-500">({minedCases})</span>}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── Reference (designed) process map + side panels ────────────────────────────────
+function ReferenceMapView({
+  reference, minedCases,
+}: { reference: OpsMapProcess | null; minedCases: number }) {
+  if (!reference) {
+    return (
+      <div className="h-[560px] flex items-center justify-center text-gray-500">
+        <Loader2 className="w-6 h-6 animate-spin text-ocean-accent" />
+      </div>
+    );
+  }
+  return (
+    <div className="flex flex-col xl:flex-row gap-4">
+      <div className="glass rounded-2xl border border-ocean-border/50 p-4 flex-1 min-w-0">
+        <ReferenceLegend />
+        <OpsMapGraph nodes={reference.nodes} edges={reference.edges} height={560} variant="reference" />
+      </div>
+
+      <div className="w-full xl:w-[360px] shrink-0 space-y-4">
+        <Card title="Reference model" icon={<Workflow className="w-3.5 h-3.5" />}>
+          <p className="text-xs text-gray-400">
+            The crew-change process <span className="text-white font-medium">as designed</span> — the
+            normative flow every case is expected to follow, independent of mined data. It is the
+            baseline the <span className="text-ocean-accent">Discovered</span> model is scored against
+            for conformance.
+          </p>
+          <div className="mt-3 flex items-start gap-2 text-[11px] text-gray-400 bg-ocean-card/40 rounded-lg px-2.5 py-2 border border-ocean-border/30">
+            {minedCases > 0 ? (
+              <>
+                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />
+                <span>
+                  {minedCases} {minedCases === 1 ? "case" : "cases"} mined — switch to{" "}
+                  <span className="text-ocean-accent">Discovered</span> to see how work actually flowed.
+                </span>
+              </>
+            ) : (
+              <>
+                <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
+                <span>No cases mined yet — run a sign-off from the Dashboard to populate the discovered model.</span>
+              </>
+            )}
+          </div>
+        </Card>
+
+        <Card title="Designed steps" icon={<Route className="w-3.5 h-3.5" />} count={reference.nodes.length}>
+          <ul className="space-y-1.5">
+            {reference.nodes.map((n) => {
+              const accent = activityColor(n.label, n.terminal);
+              return (
+                <li
+                  key={n.id}
+                  className="flex items-center justify-between gap-2 text-xs bg-ocean-card/40 rounded-lg px-2.5 py-1.5 border border-ocean-border/30"
+                >
+                  <span className="flex items-center gap-2 min-w-0">
+                    <i className="w-2 h-2 rounded-full shrink-0" style={{ background: accent }} />
+                    <span className="text-gray-200 truncate">{n.label}</span>
+                  </span>
+                  {n.actor && <span className="text-[10px] text-gray-500 shrink-0">{n.actor}</span>}
+                </li>
+              );
+            })}
+          </ul>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+function ReferenceLegend() {
+  const items: [string, string, boolean][] = [
+    ["happy path", "#3b6aa0", false],
+    ["parallel", "#8b5cf6", true],
+    ["rejected", "#f59e0b", false],
+    ["failed", "#ef4444", false],
+  ];
+  return (
+    <div className="flex flex-wrap items-center gap-3 mb-3 text-[11px] text-gray-400">
+      {items.map(([label, color, dashed]) => (
+        <span key={label} className="flex items-center gap-1.5">
+          <i
+            className="w-4 h-0.5"
+            style={{
+              background: dashed
+                ? `repeating-linear-gradient(90deg, ${color} 0 4px, transparent 4px 7px)`
+                : color,
+            }}
+          />
+          {label}
+        </span>
+      ))}
+      <span className="ml-auto text-gray-600">designed flow · drag nodes · scroll to zoom</span>
+    </div>
+  );
 }
 
 interface ActivityRecord {

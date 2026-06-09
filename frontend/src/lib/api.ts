@@ -123,12 +123,15 @@ export const graphApi = {
 // ── L2 Knowledge Graph (OpsMap — process mining) ─────────────────────────────────
 export type OpsMapOutcome = "success" | "rejected" | "failed" | "in_progress";
 
+// Edge kind on the reference (designed) model — absent on the mined model.
+export type OpsMapEdgeKind = "happy" | "parallel" | "exception" | "error";
 export interface OpsMapProcessNode {
   id: string;
   type: "Activity";
   label: string;
   cases: number;
   terminal: boolean;
+  actor?: string;      // reference model only — who performs the step
 }
 export interface OpsMapProcessEdge {
   id: string;
@@ -136,10 +139,12 @@ export interface OpsMapProcessEdge {
   target: string;
   count: number;
   avg_seconds: number;
-  label: string;       // e.g. "3x · 1.3m"
+  label: string;       // e.g. "3x · 1.3m" (mined) or "pass"/"fail" (reference)
+  kind?: OpsMapEdgeKind; // reference model only
 }
 export interface OpsMapProcess {
   dimension: "OpsMap";
+  model?: "reference";   // present on the reference model, absent on the mined one
   nodes: OpsMapProcessNode[];
   edges: OpsMapProcessEdge[];
   metrics: {
@@ -231,6 +236,7 @@ export interface OpsMapCases {
 export const opsMapApi = {
   getSummary: () => api.get<OpsMapSummary>("/graph/opsmap/summary").then(r => r.data),
   getProcess: () => api.get<OpsMapProcess>("/graph/opsmap/process").then(r => r.data),
+  getReference: () => api.get<OpsMapProcess>("/graph/opsmap/reference").then(r => r.data),
   getVariants: () => api.get<OpsMapVariants>("/graph/opsmap/variants").then(r => r.data),
   getBottlenecks: (limit = 5) =>
     api.get<OpsMapBottlenecks>("/graph/opsmap/bottlenecks", { params: { limit } }).then(r => r.data),

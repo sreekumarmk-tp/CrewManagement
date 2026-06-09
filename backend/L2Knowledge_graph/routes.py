@@ -154,6 +154,15 @@ async def opsmap_process():
     return graph
 
 
+@router.get("/opsmap/reference")
+async def opsmap_reference():
+    """The reference (normative) crew-change process model — the DESIGNED flow,
+    independent of mined data. Renders a process map even before any workflow has run,
+    and gives the discovered model (/opsmap/process) something to be compared against.
+    Same envelope as /opsmap/process; nodes carry an `actor`, edges a `kind`."""
+    return ops_map.reference_process_model()
+
+
 @router.get("/opsmap/variants")
 async def opsmap_variants():
     """The distinct end-to-end paths cases took, ranked by frequency (happy path vs

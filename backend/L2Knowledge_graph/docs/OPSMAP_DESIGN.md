@@ -108,6 +108,30 @@ graph UI can render the process map with no new client contract.
 
 ---
 
+## 4a. Reference (designed) process map — `reference_process_model()`
+
+The mined DFG (§4) is **discovered** — it is empty until workflows run and only ever
+shows transitions that actually occurred. Alongside it, OpsMap exposes a **reference
+(normative) process map**: the crew-change flow *as designed*, built from the activity
+vocabulary rather than from data, so a process map is **always** available.
+
+- **Same envelope** as `build_process_graph()` (`{dimension, nodes, edges, metrics}`),
+  so the existing `OpsMapGraph` UI renders it unchanged. `model: "reference"` flags it.
+- **Derived, not hand-listed:** the happy spine and the parallel specialist block come
+  from `HAPPY_PATH` / `_PARALLEL_BLOCK`, so the reference cannot drift from the
+  conformance definition. The two terminal exception branches
+  (`Compliance Check → Sign-On Rejected`, `Compliance Check → Workflow Failed`) are
+  defined explicitly.
+- **Extra fields for the designed view:** each node carries an `actor` (there are no
+  case counts to show), and each edge a `kind` ∈ {`happy`, `parallel`, `exception`,
+  `error`} so the UI can colour the spine, dash the concurrent block, and flag the
+  exception/error branches.
+
+In the UI this is a **Discovered ⇄ Reference toggle** on the OpsMap view; the reference
+map also doubles as the empty-state visual (the page opens on it when no cases have been
+mined yet). Discovered answers *"how did work actually flow"*; Reference answers *"how is
+it supposed to flow"* — and the gap between them is exactly what `conformance()` scores.
+
 ## 5. API (`/api/v1/graph/opsmap/...`)
 
 All read endpoints work under **both** backends (they return empty structures, not
@@ -116,7 +140,8 @@ All read endpoints work under **both** backends (they return empty structures, n
 | Endpoint | Returns |
 |---|---|
 | `GET /opsmap/summary` | cases mined, activities, transitions, variant count, conformance rate, avg cycle time |
-| `GET /opsmap/process` | the React-Flow-ready DFG (nodes + edges with frequency/duration) |
+| `GET /opsmap/process` | the React-Flow-ready **discovered** DFG (nodes + edges with frequency/duration) |
+| `GET /opsmap/reference` | the **reference (designed)** process map — see §4a; always populated, even with 0 cases |
 | `GET /opsmap/variants` | distinct paths ranked by frequency, with outcome + cycle time |
 | `GET /opsmap/bottlenecks?limit=` | slowest handoffs |
 | `GET /opsmap/conformance` | happy-path conformance rate + per-case deviations |

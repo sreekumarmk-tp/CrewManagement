@@ -52,10 +52,15 @@ interface ActivityNodeData {
   cases: number;
   terminal: boolean;
   selected?: boolean;
+  reference?: boolean;   // reference (designed) model — show the actor, not case counts
+  actor?: string;
 }
 
 function ActivityNode({ data }: NodeProps<ActivityNodeData>) {
   const accent = activityColor(data.label, data.terminal);
+  const subtitle = data.reference
+    ? (data.actor ?? "")
+    : `${data.cases} ${data.cases === 1 ? "case" : "cases"}`;
   return (
     <div
       style={{
@@ -73,13 +78,21 @@ function ActivityNode({ data }: NodeProps<ActivityNodeData>) {
     >
       <Handle type="target" position={Position.Left} style={{ background: accent, width: 6, height: 6 }} />
       <div style={{ fontSize: 12, fontWeight: 700, color: "#fff", lineHeight: 1.2 }}>{data.label}</div>
-      <div style={{ fontSize: 10, color: accent, marginTop: 2 }}>
-        {data.cases} {data.cases === 1 ? "case" : "cases"}
-      </div>
+      {subtitle && (
+        <div style={{ fontSize: 10, color: accent, marginTop: 2 }}>{subtitle}</div>
+      )}
       <Handle type="source" position={Position.Right} style={{ background: accent, width: 6, height: 6 }} />
     </div>
   );
 }
+
+// Edge colour for the reference model, keyed by the designed transition kind.
+const EDGE_KIND_COLOR: Record<string, string> = {
+  happy: "#3b6aa0",      // the normal spine — neutral blue
+  parallel: "#8b5cf6",   // the concurrent specialist block — violet
+  exception: "#f59e0b",  // compliance rejection — amber
+  error: "#ef4444",      // workflow failure — red
+};
 
 const nodeTypes = { activityNode: ActivityNode };
 
@@ -102,6 +115,7 @@ export default function OpsMapGraph({
   bottleneckEdgeId,
   selectedId,
   onNodeClick,
+  variant = "discovered",
 }: {
   nodes: OpsMapProcessNode[];
   edges: OpsMapProcessEdge[];
@@ -109,21 +123,42 @@ export default function OpsMapGraph({
   bottleneckEdgeId?: string | null;
   selectedId?: string | null;
   onNodeClick?: (id: string) => void;
+  variant?: "discovered" | "reference";
 }) {
+  const reference = variant === "reference";
   const nodes: Node[] = useMemo(() => {
     const pos = layout(rawNodes);
     return rawNodes.map((n) => ({
       id: n.id,
       type: "activityNode",
       position: pos[n.id] || { x: 0, y: 0 },
-      data: { label: n.label, cases: n.cases, terminal: n.terminal, selected: n.id === selectedId },
+      data: {
+        label: n.label, cases: n.cases, terminal: n.terminal,
+        selected: n.id === selectedId, reference, actor: n.actor,
+      },
       draggable: true,
     }));
-  }, [rawNodes, selectedId]);
+  }, [rawNodes, selectedId, reference]);
 
   const edges: Edge[] = useMemo(
     () =>
       rawEdges.map((e) => {
+        // Reference model: colour by designed transition kind, dash the parallel block.
+        if (reference) {
+          const stroke = EDGE_KIND_COLOR[e.kind ?? "happy"] ?? "#3b6aa0";
+          const dashed = e.kind === "parallel";
+          return {
+            id: e.id,
+            source: e.source,
+            target: e.target,
+            label: e.label,
+            style: { stroke, strokeWidth: 1.5, strokeDasharray: dashed ? "5 4" : undefined },
+            labelStyle: { fill: "#cbd5e1", fontSize: 9, fontWeight: 700 },
+            labelBgStyle: { fill: "#0a1628", fillOpacity: 0.85 },
+            markerEnd: { type: MarkerType.ArrowClosed, color: stroke },
+          };
+        }
+        // Discovered model: highlight the slowest handoff (bottleneck) in red.
         const isBottleneck = bottleneckEdgeId === e.id;
         const stroke = isBottleneck ? "#ef4444" : "#3b6aa0";
         return {
@@ -138,7 +173,7 @@ export default function OpsMapGraph({
           markerEnd: { type: MarkerType.ArrowClosed, color: stroke },
         };
       }),
-    [rawEdges, bottleneckEdgeId]
+    [rawEdges, bottleneckEdgeId, reference]
   );
 
   return (
