@@ -48,6 +48,7 @@ class RateLimitedClient:
         base_url: str = "",
         logger: Optional[StructuredLogger] = None,
         default_headers: Optional[Dict[str, str]] = None,
+        auth_provider: Optional[Callable[[], str]] = None,
         rate_limit_delay_ms: int = 350,
         max_rate_limit_errors: int = 3,
         max_server_retries: int = 3,
@@ -57,6 +58,10 @@ class RateLimitedClient:
         self.base_url = base_url.rstrip("/")
         self.logger = logger or StructuredLogger(console_output=False)
         self.default_headers = default_headers or {}
+        # Optional callable returning a fresh bearer token per request; lets a
+        # connector carry a self-refreshing OAuth credential (e.g. Gmail's
+        # refresh-token flow) instead of a frozen Authorization header.
+        self.auth_provider = auth_provider
         self.rate_limit_delay_ms = rate_limit_delay_ms
         self.max_rate_limit_errors = max_rate_limit_errors
         self.max_server_retries = max_server_retries
@@ -109,6 +114,10 @@ class RateLimitedClient:
         """
         url = path if path.startswith("http") else f"{self.base_url}/{path.lstrip('/')}"
         merged = {**self.default_headers, **(headers or {})}
+        if self.auth_provider is not None:
+            # Re-mint the bearer on every call so a refreshed token is picked up
+            # transparently; an explicit per-call header still wins.
+            merged.setdefault("Authorization", f"Bearer {self.auth_provider()}")
         session = self._ensure_session()
 
         server_attempts = 0

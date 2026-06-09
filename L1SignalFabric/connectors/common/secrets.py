@@ -16,7 +16,55 @@ from __future__ import annotations
 import json
 import os
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional, Union
+
+
+def load_env(path: Optional[Union[str, Path]] = None) -> None:
+    """Populate ``os.environ`` from a ``.env`` file (idempotent, never clobbers).
+
+    A ``.env`` file is inert on its own — Python only sees it once something
+    loads it. CLIs call this at startup so ``GMAIL_ACCESS_TOKEN`` & friends can
+    live in ``.env`` instead of on the command line.
+
+    Uses ``python-dotenv`` when installed (handles quoting, ``export`` prefixes,
+    multi-line values); otherwise falls back to a minimal ``KEY=value`` parser
+    that strips quotes and ``# inline comments``. Existing environment variables
+    always win, so an exported value or a ``--flag`` still overrides ``.env``.
+
+    Set ``L1_DISABLE_DOTENV=1`` to make this a no-op — used by the test suite so
+    a developer's local ``.env`` cannot leak real secrets into hermetic tests.
+    """
+    if os.getenv("L1_DISABLE_DOTENV"):
+        return
+    env_path = Path(path) if path else Path.cwd() / ".env"
+    try:
+        from dotenv import load_dotenv  # type: ignore
+
+        load_dotenv(env_path, override=False)
+        return
+    except ImportError:
+        pass
+
+    if not env_path.is_file():
+        return
+    for raw in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        if line.startswith("export "):
+            line = line[len("export "):]
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip()
+        # Strip an inline comment only when the value is not quoted.
+        if value and value[0] not in "\"'" and " #" in value:
+            value = value.split(" #", 1)[0].rstrip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        if key and key not in os.environ:
+            os.environ[key] = value
+
 
 # JSON keys the scrapers probed inside a Secrets Manager secret, generalised.
 _SECRET_KEYS = ("token", "value", "secret", "api_key", "access_token",

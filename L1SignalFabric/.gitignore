@@ -10,5 +10,14 @@ venv/
 data/l2_store.jsonl
 server.log
 .server.pid
+*.log
+output/                 # connector backfill/scrape bundles (--output-dir default)
+# test / coverage
+.coverage
+coverage.xml
+htmlcov/
+pytest-of-*/            # pytest tmp_path scratch dirs (regenerated each run)
+.pytest_tmp/
 # editor lock files (e.g. LibreOffice on the .docx)
 .~lock.*#
+.DS_Store

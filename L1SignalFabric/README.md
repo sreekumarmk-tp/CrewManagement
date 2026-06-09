@@ -129,9 +129,13 @@ export SLACK_SIGNING_SECRET=...              # verifies POST /slack/events (HMAC
 export SLACK_TOKEN=xoxb-...                  # bot token for the Web-API backfill CLI
 
 # Gmail — Pub/Sub push (metadata only)
-export GMAIL_ACCESS_TOKEN=ya29....           # OAuth access token (history pull)
+# Self-refreshing per-user OAuth: mint the refresh token once with
+#   python -m connectors.gmail.cli authorize     # opens consent, prints the trio
+export GMAIL_CLIENT_ID=...apps.googleusercontent.com
+export GMAIL_CLIENT_SECRET=...
+export GMAIL_REFRESH_TOKEN=1//...            # connector mints fresh access tokens from these
 export GMAIL_PUBSUB_TOKEN=...                # shared-secret echoed on ?token= (push auth)
-# export GMAIL_OIDC_AUDIENCE=https://you/gmail/push   # alternative: verify the Pub/Sub OIDC JWT
+export GMAIL_PUBSUB_TOPIC=projects/<project-id>/topics/gmail-signals   # default for `watch`
 
 # Outlook + SharePoint — Microsoft Graph (one app, two sources)
 export OUTLOOK_ACCESS_TOKEN=...              # or use the app-credential trio below
@@ -178,6 +182,13 @@ curl -sX POST 'localhost:8001/gmail/push?token=$GMAIL_PUBSUB_TOKEN' \
 | Outlook      | `/outlook/webhook`             | Graph `POST /subscriptions` (resource = mail)   |
 | SharePoint   | `/sharepoint/webhook`          | Graph `POST /subscriptions` (resource = drive/list) |
 
+> **Gmail push needs an active `watch`, not just credentials.** After configuring,
+> run `make gmail-watch` (re-run before the ~7-day expiry) and confirm the chain with
+> `make gmail-doctor`. The one-time `make gmail-authorize` also requires your mailbox
+> to be a **Test user** on the OAuth consent screen (or the app **Published**) — while
+> in *Testing* mode the refresh token expires after 7 days. See
+> [`docs/CONNECTOR_SETUP.md` §2](docs/CONNECTOR_SETUP.md).
+
 ### Pull connectors — backfill / poll from the CLI
 
 Every connector has a CLI (`test` to verify creds; a `scrape`/`backfill`/`poll`
@@ -195,9 +206,11 @@ python -m connectors.notion.cli test       --token ntn_...
 python -m connectors.notion.cli list-pages --token ntn_... --type page
 python -m connectors.notion.cli scrape     --config connectors/notion/config.example.yaml
 
-# Gmail — metadata-only backfill over a search window
-python -m connectors.gmail.cli watch    --token $GMAIL_ACCESS_TOKEN --topic projects/p/topics/t
-python -m connectors.gmail.cli backfill --token $GMAIL_ACCESS_TOKEN --query "newer_than:30d"
+# Gmail — metadata-only; creds come from the refresh-token trio in .env (or --token)
+python -m connectors.gmail.cli authorize   # one-time consent → prints GMAIL_REFRESH_TOKEN
+python -m connectors.gmail.cli test        # confirms creds; prints mailbox + historyId
+python -m connectors.gmail.cli watch       # (re)register push; --topic defaults to GMAIL_PUBSUB_TOPIC
+python -m connectors.gmail.cli backfill --query "newer_than:30d"
 
 # Outlook — metadata-only Graph mail backfill (token or app creds)
 python -m connectors.outlook.cli backfill --token $OUTLOOK_ACCESS_TOKEN --folder inbox

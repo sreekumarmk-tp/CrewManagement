@@ -1,4 +1,4 @@
-.PHONY: install test run dashboard up down demo smoke seed stream stream-live clean
+.PHONY: install test run dashboard up down demo smoke seed stream stream-live clean gmail-authorize gmail-watch gmail-doctor docs
 
 PY ?= python3
 PORT ?= 8001
@@ -52,6 +52,30 @@ stream:
 # Replay the future runway on a virtual clock (the "world in motion")
 stream-live:
 	$(PY) -m demo.stream --mode live --speed $(SPEED)
+
+# --- Gmail push (Pub/Sub) ---
+# Diagnose the whole new-email → Pub/Sub → /gmail/push chain and say which link is broken.
+gmail-doctor:
+	bash scripts/gmail_push_doctor.sh
+
+# One-time consent → mints a durable GMAIL_REFRESH_TOKEN (prints the trio to paste
+# into .env). Needs a "Desktop app" OAuth client (GMAIL_CLIENT_ID/SECRET).
+gmail-authorize:
+	$(PY) -m connectors.gmail.cli authorize
+
+# (Re)register the Gmail watch — also the RENEWAL command: the watch expires after
+# ~7 days, so run this on a schedule (see the cron stanza printed by gmail-doctor).
+# Reads the refresh-token trio (GMAIL_CLIENT_ID/SECRET/REFRESH_TOKEN) — or a static
+# GMAIL_ACCESS_TOKEN — plus GMAIL_PUBSUB_TOPIC from .env.
+gmail-watch:
+	$(PY) -m connectors.gmail.cli watch
+
+# Regenerate the Word docs from their markdown sources (needs pandoc:
+# `apt-get install pandoc` / `brew install pandoc`).
+docs:
+	pandoc docs/CONNECTOR_SETUP.md  -o docs/L1_SignalFabric_Connector_Setup.docx
+	pandoc docs/IMPLEMENTATION.md   -o docs/L1_SignalFabric_Implementation.docx
+	@echo "regenerated docs/*.docx"
 
 clean:
 	find . -type d -name __pycache__ -prune -exec rm -rf {} +

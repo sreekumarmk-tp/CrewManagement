@@ -100,31 +100,60 @@ are never fetched.
    **Endpoint URL:** `${PUBLIC_URL}/gmail/push?token=<SHARED_SECRET>`
    (the `token` query param is the shared secret the connector checks).
 
-### 2.3 Get an access token
-For a quick demo, mint an OAuth token with the **Gmail readonly/metadata** scope
-(`https://www.googleapis.com/auth/gmail.readonly`) via the
-[OAuth Playground](https://developers.google.com/oauthplayground) or a service
-account with domain-wide delegation. Copy the **access token**.
+### 2.3 OAuth client + a durable refresh token (recommended)
+A raw access token expires in ~1 hour, but a `watch` lasts 7 days — so push
+silently stops once the token goes stale. Use a **refresh token** instead: the
+connector mints fresh access tokens itself.
+
+1. **APIs & Services → OAuth consent screen:** configure it, add the
+   `.../auth/gmail.readonly` scope, and add your mailbox account under **Test
+   users** (or **Publish** the app — see the caveat below).
+2. **APIs & Services → Credentials → Create credentials → OAuth client ID →
+   Application type: Desktop app.** Note the **Client ID** and **Client secret**.
+3. Mint the refresh token (opens a browser, captures the redirect on localhost,
+   prints the trio):
+   ```bash
+   python -m connectors.gmail.cli authorize \
+     --client-id <client id> --client-secret <client secret>
+   ```
+   On the consent screen you'll see *"Google hasn't verified this app"* → **Advanced
+   → Go to … (unsafe)** — expected for your own unverified app.
+
+> **Caveat — the 7-day refresh-token trap.** While the OAuth consent screen is in
+> **Testing** mode, the *refresh token itself* expires after 7 days. For a durable
+> token, set Publishing status to **In production** (`gmail.readonly` is a
+> restricted scope, so a public app needs Google verification — but an internal /
+> single-tenant app can run unverified within the user cap).
+>
+> *Quick-demo fallback:* skip 2.3 and paste a short-lived `GMAIL_ACCESS_TOKEN` from
+> the [OAuth Playground](https://developers.google.com/oauthplayground) instead of
+> the trio — it works for ~1 hour, fine for a one-shot test but not for push.
 
 ### 2.4 Register the watch
+Reads the credentials and `GMAIL_PUBSUB_TOPIC` from `.env` (configure 2.5 first):
 ```bash
-python -m connectors.gmail.cli watch \
-  --token <access token> \
-  --topic projects/<project-id>/topics/gmail-signals
+python -m connectors.gmail.cli watch        # or: make gmail-watch
+# → "watch registered: historyId=… expiration=…"   (re-run before the ~7-day expiry)
 ```
-(Re-run before the ~7-day watch expiry.)
+A `403 / permission` error here means the topic doesn't exist or
+`gmail-api-push@system.gserviceaccount.com` isn't a **Pub/Sub Publisher** on it (2.2).
 
 ### 2.5 Configure
 ```bash
-export GMAIL_ACCESS_TOKEN=<access token>        # used to expand history → metadata
+export GMAIL_CLIENT_ID=<client id>              # the connector mints fresh access
+export GMAIL_CLIENT_SECRET=<client secret>      #   tokens from this trio and expands
+export GMAIL_REFRESH_TOKEN=<refresh token>      #   history → metadata
 export GMAIL_PUBSUB_TOKEN=<SHARED_SECRET>       # must match the ?token= in 2.2
+export GMAIL_PUBSUB_TOPIC=projects/<project-id>/topics/gmail-signals
+export GMAIL_PUSH_ENDPOINT=${PUBLIC_URL}/gmail/push?token=<SHARED_SECRET>   # used by `make gmail-doctor`
 # Alternative to the shared secret — verify the Pub/Sub OIDC JWT instead:
 # export GMAIL_OIDC_AUDIENCE=${PUBLIC_URL}/gmail/push   # needs pip install ".[google]"
 ```
 
 ### 2.6 Verify
 ```bash
-python -m connectors.gmail.cli test --token $GMAIL_ACCESS_TOKEN   # prints mailbox + historyId
+python -m connectors.gmail.cli test     # refreshes a token, prints mailbox + historyId
+make gmail-doctor                       # walks the whole push chain, flags the broken link
 # send an email to the watched mailbox → a GMAIL/email signal appears on the dashboard.
 # Subject "Sign-off notification" or label crew/sign-off → an L2 SignOffEvent node.
 ```
@@ -341,7 +370,7 @@ open http://localhost:8001/
 | Connector | Variables |
 |---|---|
 | Slack | `SLACK_SIGNING_SECRET`, `SLACK_TOKEN` |
-| Gmail | `GMAIL_ACCESS_TOKEN`, `GMAIL_PUBSUB_TOKEN` *(or `GMAIL_OIDC_AUDIENCE`)* |
+| Gmail | `GMAIL_CLIENT_ID`+`GMAIL_CLIENT_SECRET`+`GMAIL_REFRESH_TOKEN` *(or a short-lived `GMAIL_ACCESS_TOKEN`)*; `GMAIL_PUBSUB_TOKEN` *(or `GMAIL_OIDC_AUDIENCE`)*; `GMAIL_PUBSUB_TOPIC`, `GMAIL_PUSH_ENDPOINT` |
 | Outlook | `OUTLOOK_ACCESS_TOKEN` *or* `MS_TENANT_ID`+`MS_CLIENT_ID`+`MS_CLIENT_SECRET`; `OUTLOOK_CLIENT_STATE` |
 | SharePoint | `MS_TENANT_ID`+`MS_CLIENT_ID`+`MS_CLIENT_SECRET` *(or `SHAREPOINT_ACCESS_TOKEN`)*; `SHAREPOINT_CLIENT_STATE` |
 | Notion | `NOTION_TOKEN` |
@@ -362,6 +391,9 @@ open http://localhost:8001/
 | Slack Request URL won't verify | service not public, or wrong path — must be `${PUBLIC_URL}/slack/events` |
 | Graph subscription create fails validation | webhook must return the `validationToken` within 10s — confirm `${PUBLIC_URL}` is reachable |
 | Gmail push returns 401 | `GMAIL_PUBSUB_TOKEN` doesn't match the `?token=` on the push subscription |
+| Gmail `authorize` → `403 access_denied` | consent screen in Testing and your account isn't a **Test user** — add it (2.3.1), or publish the app |
+| Gmail push arrives but `ingested: 0` | no server credential to expand history — set the refresh-token trio (2.5); `make gmail-doctor` flags this |
+| Gmail email doesn't trigger anything | no active `watch` (run 2.4 / `make gmail-watch`), or the push subscription points at a stale ngrok URL — `make gmail-doctor` |
 | Outlook/SharePoint 401 on notifications | `*_CLIENT_STATE` env var ≠ the `clientState` set when creating the subscription |
 | Notion `list-pages` empty | the integration hasn't been added to any page (section 5.2) |
 | Connector missing from `/healthz` | its credentials aren't set → still in fixture mode (expected) |

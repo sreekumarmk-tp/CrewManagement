@@ -101,7 +101,7 @@ def create_app(
         if notion_client else None
     )
 
-    gmail_client = (GmailClient(cfg.gmail_access_token) if cfg.gmail_access_token else None)
+    gmail_client = _build_gmail_client(cfg)
     app.state.gmail = GmailConnector(
         tenant_id=cfg.tenant_id,
         client=gmail_client,
@@ -147,6 +147,27 @@ def create_app(
     app.include_router(live.router)   # GET / (dashboard), /stream (SSE), /demo/*
 
     return app
+
+
+def _build_gmail_client(cfg: Settings):
+    """Build a GmailClient, preferring the self-refreshing OAuth flow.
+
+    Mirrors the CLI's credential resolution: a refresh-token trio
+    (client id/secret + refresh token) yields a client that mints fresh access
+    tokens on demand — so the server keeps expanding history on push past the
+    ~1-hour access-token lifetime. Falls back to a static GMAIL_ACCESS_TOKEN,
+    else None (dev/replay mode — pushes accept inlined fixtures only).
+    """
+    if cfg.gmail_client_id and cfg.gmail_client_secret and cfg.gmail_refresh_token:
+        from connectors.gmail.auth import OAuthTokenProvider
+        return GmailClient(OAuthTokenProvider(
+            client_id=cfg.gmail_client_id,
+            client_secret=cfg.gmail_client_secret,
+            refresh_token=cfg.gmail_refresh_token,
+        ))
+    if cfg.gmail_access_token:
+        return GmailClient(cfg.gmail_access_token)
+    return None
 
 
 def _build_outlook_client(cfg: Settings):

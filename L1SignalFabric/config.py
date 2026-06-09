@@ -11,6 +11,14 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+# A .env file is inert until something loads it. Do so before the Settings
+# field defaults below read os.environ, so credentials configured in .env
+# (GMAIL_PUBSUB_TOKEN, access tokens, signing secrets, …) reach the server —
+# not just the CLIs.
+from connectors.common.secrets import load_env
+
+load_env()
+
 SERVICE_NAME = "l1-signalfabric"
 SERVICE_VERSION = "0.1.0"
 
@@ -70,6 +78,12 @@ class Settings:
     notion_token_secret_arn: str = os.getenv("NOTION_TOKEN_SECRET_ARN", "")
 
     # Gmail (Pub/Sub push, metadata only)
+    # Per-user OAuth: client_id+secret+refresh_token => self-refreshing access
+    # tokens (durable; keeps a 7-day watch serviced). Falls back to the static,
+    # ~1-hour gmail_access_token when the refresh trio is unset.
+    gmail_client_id: str = os.getenv("GMAIL_CLIENT_ID", "")
+    gmail_client_secret: str = os.getenv("GMAIL_CLIENT_SECRET", "")
+    gmail_refresh_token: str = os.getenv("GMAIL_REFRESH_TOKEN", "")
     gmail_access_token: str = os.getenv("GMAIL_ACCESS_TOKEN", "")
     gmail_pubsub_token: str = os.getenv("GMAIL_PUBSUB_TOKEN", "")          # shared-secret push auth
     gmail_oidc_audience: str = os.getenv("GMAIL_OIDC_AUDIENCE", "")        # OIDC JWT audience

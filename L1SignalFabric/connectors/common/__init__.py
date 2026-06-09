@@ -12,7 +12,7 @@ from .logger import StructuredLogger
 from .metrics import ScrapeMetrics
 from .msgraph_webhook import notification_items, verify_graph_webhook
 from .poller import PollingConnector
-from .secrets import get_secret_value, parse_timestamp, resolve_token
+from .secrets import get_secret_value, load_env, parse_timestamp, resolve_token
 from .writer import OutputWriter
 
 __all__ = [
@@ -28,5 +28,6 @@ __all__ = [
     "notification_items",
     "resolve_token",
     "get_secret_value",
+    "load_env",
     "parse_timestamp",
 ]

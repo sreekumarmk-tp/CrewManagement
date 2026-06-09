@@ -13,7 +13,7 @@ users.messages.list · users.getProfile
 
 from __future__ import annotations
 
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Callable, Dict, Iterator, List, Optional, Union
 
 from connectors.common import RateLimitedClient, StructuredLogger
 
@@ -24,7 +24,7 @@ METADATA_HEADERS = ["From", "To", "Cc", "Subject", "Date", "Message-ID"]
 class GmailClient:
     def __init__(
         self,
-        access_token: str,
+        access_token: Union[str, Callable[[], str]],
         logger: Optional[StructuredLogger] = None,
         *,
         user_id: str = "me",
@@ -33,10 +33,16 @@ class GmailClient:
     ) -> None:
         self.logger = logger or StructuredLogger(console_output=False)
         self.user_id = user_id
+        # ``access_token`` may be a literal bearer string (short-lived, e.g. an
+        # OAuth Playground token) or a callable that returns a fresh token on
+        # demand (the refresh-token flow — see connectors.gmail.auth). Normalise
+        # to a provider so the Authorization header is re-minted per request and
+        # a refreshed token is picked up transparently.
+        token_provider = access_token if callable(access_token) else (lambda: access_token)
         self._http = RateLimitedClient(
             base_url=GMAIL_API_BASE,
             logger=self.logger,
-            default_headers={"Authorization": f"Bearer {access_token}"},
+            auth_provider=token_provider,
             rate_limit_delay_ms=rate_limit_delay_ms,
             max_rate_limit_errors=max_rate_limit_errors,
         )
