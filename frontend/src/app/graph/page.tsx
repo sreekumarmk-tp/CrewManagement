@@ -9,7 +9,7 @@ import Link from "next/link";
 import toast, { Toaster } from "react-hot-toast";
 import {
   Anchor, Ship, Activity, BarChart3, Share2, Search, X, Loader2, Database,
-  ArrowRight, ArrowLeft, Route, GitBranch,
+  ArrowRight, ArrowLeft, Route, GitBranch, Building2,
 } from "lucide-react";
 
 import {
@@ -17,8 +17,9 @@ import {
 } from "@/lib/api";
 import EntityGraph, { TYPE_COLOR } from "@/components/graph/EntityGraph";
 import OpsMapView from "@/components/graph/OpsMapView";
+import OrgMapView from "@/components/graph/OrgMapView";
 
-type Dimension = "entity" | "ops";
+type Dimension = "entity" | "ops" | "org";
 
 export default function GraphPage() {
   const [dimension, setDimension] = useState<Dimension>("entity");
@@ -118,7 +119,7 @@ export default function GraphPage() {
           </div>
           <div className="flex items-center gap-2 text-xs text-gray-500">
             <Database className="w-3.5 h-3.5 text-ocean-accent" />
-            <span>L2 {dimension === "ops" ? "OpsMap · process mining" : "EntityMap · AGE"}</span>
+            <span>L2 {dimension === "ops" ? "OpsMap · process mining" : dimension === "org" ? "OrgMap · org hierarchy" : "EntityMap · AGE"}</span>
           </div>
         </div>
       </nav>
@@ -133,7 +134,9 @@ export default function GraphPage() {
             <p className="text-sm text-gray-500">
               {dimension === "entity"
                 ? "EntityMap — search crew by rank, certificate & port across the maritime context graph."
-                : "OpsMap — the crew-change process mined from the events workflows emit at runtime."}
+                : dimension === "ops"
+                ? "OpsMap — the crew-change process mined from the events workflows emit at runtime."
+                : "OrgMap — company → fleet → vessel hierarchy and per-rank manning gaps."}
             </p>
           </div>
           {dimension === "entity" && summary && (
@@ -166,10 +169,18 @@ export default function GraphPage() {
             icon={<Route className="w-4 h-4" />}
             label="OpsMap"
           />
+          <DimensionTab
+            active={dimension === "org"}
+            onClick={() => setDimension("org")}
+            icon={<Building2 className="w-4 h-4" />}
+            label="OrgMap"
+          />
         </div>
 
         {dimension === "ops" ? (
           <OpsMapView />
+        ) : dimension === "org" ? (
+          <OrgMapView />
         ) : unavailable ? (
           <div className="glass rounded-2xl border border-amber-500/30 p-8 text-center">
             <p className="text-amber-300 font-semibold">Graph backend disabled</p>
