@@ -1,5 +1,5 @@
 import axios from "axios";
-import type { CrewMember, WorkflowState, SystemMetrics, ROIMetrics } from "@/types";
+import type { CrewMember, WorkflowState, SystemMetrics, ROIMetrics, DecisionTrace, PatternReport, SimilarCrewResponse } from "@/types";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -242,6 +242,30 @@ export const opsMapApi = {
     api.get<OpsMapBottlenecks>("/graph/opsmap/bottlenecks", { params: { limit } }).then(r => r.data),
   getConformance: () => api.get<OpsMapConformance>("/graph/opsmap/conformance").then(r => r.data),
   getCases: () => api.get<OpsMapCases>("/graph/opsmap/cases").then(r => r.data),
+};
+
+// ── Decisions (L4 Decision Graph) ──────────────────────────────────────────────
+export const decisionApi = {
+  list: (limit?: number) =>
+    api.get<DecisionTrace[]>("/decisions/", { params: { limit } }).then(r => r.data),
+
+  get: (id: string) =>
+    api.get<DecisionTrace>(`/decisions/${id}`).then(r => r.data),
+
+  seedDemo: () =>
+    api.post<{ seeded: number; decisions: DecisionTrace[] }>("/decisions/demo-seed").then(r => r.data),
+};
+
+// ── Pattern Detection (L4 #4) ──────────────────────────────────────────────────
+export const patternApi = {
+  get: (limit?: number) =>
+    api.get<PatternReport>("/patterns/", { params: { limit } }).then(r => r.data),
+};
+
+// ── Structural Embeddings (L4 #3) ──────────────────────────────────────────────
+export const embeddingApi = {
+  similar: (crewId: string, pool?: string, limit?: number) =>
+    api.get<SimilarCrewResponse>(`/embeddings/similar/${crewId}`, { params: { pool, limit } }).then(r => r.data),
 };
 
 // Capabilities of each managed agent. `tools` are its functions (custom tools

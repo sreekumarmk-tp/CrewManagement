@@ -13,6 +13,10 @@ out/
 .env.local
 *.tsbuildinfo
 
+# TypeScript incremental build cache — machine-local, must NOT be committed
+# (a merged/stale copy desyncs incremental builds after conflict fixes).
+*.tsbuildinfo
+
 # Editor
 .DS_Store
 *.swp

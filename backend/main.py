@@ -12,6 +12,10 @@ from fastapi.responses import JSONResponse
 from api.routes.crew import router as crew_router
 from api.routes.workflow import router as workflow_router
 from api.routes.monitoring import router as monitoring_router
+from api.routes.decisions import router as decisions_router
+from api.routes.precedents import router as precedents_router
+from api.routes.patterns import router as patterns_router
+from api.routes.embeddings import router as embeddings_router
 from L2Knowledge_graph.routes import router as graph_router
 from api.websockets.workflow_ws import manager
 from config import settings
@@ -53,6 +57,10 @@ app.include_router(crew_router, prefix="/api/v1")
 app.include_router(workflow_router, prefix="/api/v1")
 app.include_router(monitoring_router, prefix="/api/v1")
 app.include_router(graph_router, prefix="/api/v1")
+app.include_router(decisions_router, prefix="/api/v1")
+app.include_router(precedents_router, prefix="/api/v1")
+app.include_router(patterns_router, prefix="/api/v1")
+app.include_router(embeddings_router, prefix="/api/v1")
 
 
 # ── WebSocket ──────────────────────────────────────────────────────────────────

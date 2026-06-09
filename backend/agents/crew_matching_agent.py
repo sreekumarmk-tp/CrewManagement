@@ -67,6 +67,23 @@ TOOLS = [
 # agents/skills/crew_matching/ via agents.skills.build_instructions().
 # See agents/skills/README.md for the layout and INTEGRATION.md for context.
 
+# L4 #3 — max point swing each precedent signal can add to a candidate's score.
+# Guidance weights are in [0, 1]; the actual boost is weight * the cap below.
+_PREFER_NAT_MAX = 10.0    # nationality matched a prior signed-on placement
+_PREFER_GRADE_MAX = 4.0   # grade matched a prior signed-on placement
+_AVOID_NAT_MAX = 12.0     # nationality matched a prior rejected placement (subtracted)
+
+# L4 #3 (embeddings) — max points the blended structural-similarity signal can add.
+_SIM_MAX = 8.0
+_SIM_REASON_THRESHOLD = 0.55   # only surface a similarity reason above this cosine
+
+
+def _embedding_funcs():
+    """Lazy accessor for the embedding helpers — imported inside calls because
+    `services/__init__` eagerly pulls in the agents stack (circular at import time)."""
+    from services.embedding_service import cosine, embed_crew
+    return cosine, embed_crew
+
 
 class CrewMatchingAgent(BaseAgent):
     def __init__(self, event_callback=None):
@@ -78,6 +95,27 @@ class CrewMatchingAgent(BaseAgent):
         )
         # Loaded lazily from Postgres on first use (can't await in __init__).
         self._all_crew: List[Dict[str, Any]] = None
+        # L4 #3 — precedent guidance injected per workflow before ranking (see
+        # PrecedentService.derive_guidance). None/has_precedent=False ⇒ no boost.
+        self._precedent_guidance: Dict[str, Any] = None
+        # L4 #3 (embeddings) — similarity context for this workflow:
+        # {"departing": [float], "precedents": [[float], ...]}. None ⇒ no boost.
+        self._similarity_context: Dict[str, Any] = None
+
+    def set_precedent_guidance(self, guidance: Dict[str, Any]) -> None:
+        """Inject the precedent-derived re-rank guidance for this workflow (L4 #3)."""
+        self._precedent_guidance = guidance or None
+
+    def set_similarity_context(
+        self, departing_embedding=None, precedent_embeddings=None
+    ) -> None:
+        """Inject the structural-embedding similarity context for this workflow:
+        the departing crew's embedding and the embeddings of prior signed-on crew
+        for this vacancy profile. Either may be None/empty (then that signal is 0)."""
+        self._similarity_context = {
+            "departing": departing_embedding,
+            "precedents": precedent_embeddings or [],
+        }
 
     async def _ensure_crew_loaded(self) -> None:
         if self._all_crew is None:
@@ -200,7 +238,20 @@ class CrewMatchingAgent(BaseAgent):
 
             # Small random variation to simulate real-world scoring
             score += random.uniform(-2, 2)
-            score = max(0, min(100, score))
+            base_score = round(max(0, min(100, score)), 1)
+
+            # L4 #3 — precedent boost: bias toward profiles that previously signed
+            # on cleanly, away from ones that were rejected. base_score already
+            # carries the jitter, so the boost is the ONLY difference (lift == boost).
+            boost, boost_reasons = self._precedent_boost(crew)
+            reasons.extend(boost_reasons)
+
+            # L4 #3 (embeddings) — blended structural-similarity boost (to the
+            # departing crew and to prior signed-on crew for this profile).
+            sim_boost, sim_reasons, sim_dep, sim_prec = self._similarity_boost(crew)
+            reasons.extend(sim_reasons)
+
+            adjusted = round(max(0, min(100, base_score + boost + sim_boost)), 1)
 
             ranked.append({
                 "crew_id": cid,
@@ -209,12 +260,111 @@ class CrewMatchingAgent(BaseAgent):
                 "grade": crew["grade"],
                 "port": crew["port"],
                 "nationality": crew["nationality"],
-                "confidence_score": round(score, 1),
+                "confidence_score": adjusted,
+                "base_confidence_score": base_score,
+                "precedent_boost": round(boost, 1),
+                "similarity_boost": round(sim_boost, 1),
+                "similarity_departing": sim_dep,
+                "similarity_precedent": sim_prec,
                 "match_reasons": reasons,
             })
 
+        # Adjusted order is what we return; capture the base-order winner too so we
+        # can tell whether precedent actually changed the selection.
+        base_winner = max(ranked, key=lambda x: x["base_confidence_score"], default=None)
         ranked.sort(key=lambda x: x["confidence_score"], reverse=True)
-        return {"ranked_candidates": ranked[:5]}
+        feedback = self._build_precedent_feedback(ranked, base_winner)
+        return {"ranked_candidates": ranked[:5], "precedent_feedback": feedback}
+
+    def _precedent_boost(self, crew: Dict[str, Any]) -> tuple:
+        """Point boost (+/-) for one candidate from the injected precedent guidance,
+        plus any human-readable reasons. Returns (0.0, []) when there's no guidance."""
+        g = self._precedent_guidance or {}
+        if not g.get("has_precedent"):
+            return 0.0, []
+        nat = (crew.get("nationality") or "")
+        grade = (crew.get("grade") or "")
+        boost = 0.0
+        reasons: List[str] = []
+        prefer_nat = g.get("prefer_nationalities") or {}
+        avoid_nat = g.get("avoid_nationalities") or {}
+        prefer_grade = g.get("prefer_grades") or {}
+        if nat in prefer_nat:
+            boost += prefer_nat[nat] * _PREFER_NAT_MAX
+            reasons.append(f"Precedent: {nat} nationals cleared this vacancy before")
+        if nat in avoid_nat:
+            boost -= avoid_nat[nat] * _AVOID_NAT_MAX
+            reasons.append(f"Precedent: {nat} was rejected for this vacancy before")
+        if grade in prefer_grade:
+            boost += prefer_grade[grade] * _PREFER_GRADE_MAX
+        return boost, reasons
+
+    def _similarity_boost(self, crew: Dict[str, Any]) -> tuple:
+        """Blended structural-similarity boost for one candidate (L4 #3 embeddings).
+
+        Returns (boost_points, reasons, sim_departing, sim_precedent). With no
+        similarity context injected, returns (0.0, [], None, None) — a no-op, so
+        ranking is unchanged without embeddings (same guard as the precedent boost).
+        """
+        ctx = self._similarity_context or {}
+        departing = ctx.get("departing")
+        precedents = ctx.get("precedents") or []
+        if not departing and not precedents:
+            return 0.0, [], None, None
+
+        cosine, embed_crew = _embedding_funcs()
+        emb = crew.get("embedding") or embed_crew(crew)
+        sim_dep = max(0.0, cosine(emb, departing)) if departing else 0.0
+        sim_prec = max((max(0.0, cosine(emb, pe)) for pe in precedents), default=0.0) if precedents else 0.0
+
+        if departing and precedents:
+            blend = 0.6 * sim_dep + 0.4 * sim_prec
+        elif precedents:
+            blend = sim_prec
+        else:
+            blend = sim_dep
+        boost = blend * _SIM_MAX
+
+        reasons: List[str] = []
+        if sim_dep >= _SIM_REASON_THRESHOLD:
+            reasons.append(f"Structurally similar to departing crew: {round(sim_dep * 100)}%")
+        if sim_prec >= _SIM_REASON_THRESHOLD:
+            reasons.append(f"Resembles prior signed-on crew: {round(sim_prec * 100)}%")
+        return boost, reasons, round(sim_dep, 3), round(sim_prec, 3)
+
+    def _build_precedent_feedback(
+        self, ranked: List[Dict[str, Any]], base_winner: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Summarize how the precedent boost re-ranked this query (L4 #3 measurement)."""
+        g = self._precedent_guidance or {}
+        applied = bool(g.get("has_precedent")) and any(c.get("precedent_boost") for c in ranked)
+        if not applied or not ranked:
+            return {"applied": False}
+        adj_winner = ranked[0]
+        top_base = adj_winner.get("base_confidence_score", adj_winner["confidence_score"])
+        top_adjusted = adj_winner["confidence_score"]
+        reranked = bool(base_winner) and base_winner["crew_id"] != adj_winner["crew_id"]
+        boosted = [
+            {
+                "crew_id": c["crew_id"], "name": c["name"],
+                "nationality": c.get("nationality"), "boost": c.get("precedent_boost", 0.0),
+            }
+            for c in ranked if c.get("precedent_boost")
+        ]
+        return {
+            "applied": True,
+            "top_base_score": top_base,
+            "top_adjusted_score": top_adjusted,
+            "lift": round(top_adjusted - top_base, 1),
+            "reranked": reranked,
+            "base_winner": (
+                {"crew_id": base_winner["crew_id"], "name": base_winner["name"]}
+                if base_winner else None
+            ),
+            "adjusted_winner": {"crew_id": adj_winner["crew_id"], "name": adj_winner["name"]},
+            "boosted": boosted,
+            "rationale": g.get("rationale"),
+        }
 
     def _get_crew_profile(self, params: Dict[str, Any]) -> Dict[str, Any]:
         crew_id = params.get("crew_id", "")
@@ -231,6 +381,7 @@ class CrewMatchingAgent(BaseAgent):
         # Extract the best match from tool call history
         ranked_result = None
         top_candidate = None
+        precedent_feedback = None
 
         for tc in self.execution.tool_calls:
             if tc.tool_name == "rankCrew" and tc.output:
@@ -239,6 +390,9 @@ class CrewMatchingAgent(BaseAgent):
                 if candidates:
                     ranked_result = candidates
                     top_candidate = candidates[0]
+                # L4 #3 — carry the re-rank measurement up to the workflow/decision.
+                if output.get("precedent_feedback"):
+                    precedent_feedback = output["precedent_feedback"]
 
         if not top_candidate:
             # Fallback
@@ -258,4 +412,5 @@ class CrewMatchingAgent(BaseAgent):
             "ranked_candidates": ranked_result or [top_candidate],
             "summary": raw_text[:500] if raw_text else "Crew matching completed.",
             "confidence_score": top_candidate.get("confidence_score", 75.0),
+            "precedent_feedback": precedent_feedback,
         }
