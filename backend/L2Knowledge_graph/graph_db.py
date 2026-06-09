@@ -49,7 +49,7 @@ if age_enabled():
         try:
             cur = dbapi_conn.cursor()
             cur.execute("LOAD 'age';")
-            cur.execute('SET search_path = ag_catalog, "$user", public;')
+            cur.execute('SET search_path = "$user", public, ag_catalog;')
             cur.close()
         except Exception as exc:
             log.warning("age.load_failed", error=str(exc))
@@ -63,25 +63,24 @@ async def run_cypher(query: str) -> List[Dict[str, Any]]:
     """
     if not age_enabled():
         return []
-    # NOTE: use exec_driver_sql, NOT text(): Cypher is full of ':Label' / ':REL_TYPE'
-    # colons, which SQLAlchemy's text() parses as bind parameters and then rejects
-    # ("A value is required for bind parameter 'RESTRICTS'"). exec_driver_sql passes the
-    # statement straight to the driver with no bind-param parsing.
+    # NB: use exec_driver_sql (raw SQL straight to the driver), NOT text(). Cypher's
+    # label/relationship syntax (e.g. `[:HOLDS]`, `(n:Crew)`) contains colons that
+    # SQLAlchemy's text() would mis-parse as `:param` bind placeholders. The query is
+    # already fully inlined inside the `$$ ... $$` dollar-quoted block, so no binding
+    # is needed.
     sql = f"SELECT * FROM cypher('{GRAPH_NAME}', $$ {query} $$) AS (v agtype);"
     async with AsyncSessionLocal() as session:
         conn = await session.connection()
-        # Load AGE + set the search_path on THIS connection, every call. The connect-event
-        # hook (_load_age) is best-effort and silently no-ops on any connection where it
-        # didn't fire (pool churn / reset), leaving cypher() off the search_path →
-        # "No function matches the given name". Doing it here makes each call self-sufficient
-        # and idempotent (LOAD is cheap once the extension is loaded in the session).
+        # AGE's cypher() lives in ag_catalog and needs the extension LOADed + the
+        # search_path set on THIS connection. The connect-event hook is unreliable
+        # through the async asyncpg adapter (the sync cursor call there can no-op),
+        # so we (idempotently) ensure it per call. LOAD is cheap and a single
+        # cypher() round-trip stays well under the latency budget.
         await conn.exec_driver_sql("LOAD 'age';")
         await conn.exec_driver_sql('SET search_path = ag_catalog, "$user", public;')
         rows = (await conn.exec_driver_sql(sql)).fetchall()
-        # Commit so write clauses (MERGE/CREATE/SET/DELETE) persist — a SQLAlchemy
-        # session opens a transaction and rolls back on close otherwise, which would
-        # silently drop every graph write (e.g. seed_graph). Harmless for read-only
-        # RETURN queries.
+        # cypher() can MUTATE (MERGE/SET/CREATE), so commit — otherwise writes roll
+        # back when the session closes. A commit after a read-only query is a no-op.
         await session.commit()
         out: List[Dict[str, Any]] = []
         for r in rows:
@@ -89,6 +88,9 @@ async def run_cypher(query: str) -> List[Dict[str, Any]]:
                 out.append(json.loads(r[0]))
             except Exception:
                 out.append({"raw": str(r[0])})
+        # MERGE / CREATE are wrapped in an implicit transaction by the session;
+        # commit so writes persist (no-op for read-only MATCH queries).
+        await session.commit()
         return out
 
 
@@ -101,7 +103,7 @@ async def ensure_graph() -> None:
     async with AsyncSessionLocal() as session:
         await session.execute(text("CREATE EXTENSION IF NOT EXISTS age;"))
         await session.execute(text("LOAD 'age';"))
-        await session.execute(text('SET search_path = ag_catalog, "$user", public;'))
+        await session.execute(text('SET search_path = "$user", public, ag_catalog;'))
         try:
             await session.execute(text(f"SELECT create_graph('{GRAPH_NAME}');"))
         except Exception:

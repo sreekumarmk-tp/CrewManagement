@@ -8,12 +8,14 @@ services:
       dockerfile: Dockerfile
     ports:
       - "8000:8000"
+    env_file:
+      - .env
     environment:
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - DATABASE_URL=postgresql+asyncpg://postgres:password@postgres:5432/maritime_crew
       - REDIS_URL=redis://redis:6379
-      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY:-}
-      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY:-}
+      # L4 #3 — use pgvector for structural-embedding similarity (the postgres image
+      # below provides it). Set to "fallback" to compute cosine in Python instead.
+      - VECTOR_BACKEND=pgvector
     depends_on:
       postgres:
         condition: service_healthy
@@ -40,18 +42,32 @@ services:
     networks:
       - maritime-net
 
-  # ── PostgreSQL ─────────────────────────────────────────────────────────────
+  # ── PostgreSQL (Apache AGE + pgvector) ──────────────────────────────────────
+  # Custom image built from L2Knowledge_graph/deploy/postgres-age.Dockerfile:
+  # pgvector/pgvector:pg16 (provides the `vector` extension) with Apache AGE compiled
+  # on top. One DB serves every backend:
+  #   GRAPH_BACKEND=fallback  → subgraph built in Python (AGE unused)
+  #   GRAPH_BACKEND=age       → real AGE graph (seed via scripts.seed_graph)
+  #   VECTOR_BACKEND=fallback → embedding cosine computed in Python (pgvector unused)
+  #   VECTOR_BACKEND=pgvector → pgvector `<=>` similarity in the DB
+  # After `up`, seed once:
+  #   docker-compose exec backend python -m scripts.seed_crew
+  #   docker-compose exec backend python -m scripts.seed_graph
+  # NOTE: switching the image requires a fresh volume — run `docker-compose down -v` once.
   # Apache AGE image (Postgres 16 + the AGE graph extension). The relational `crew`
   # table works on any Postgres; AGE is only needed for GRAPH_BACKEND=age (L2 graph +
   # graph-sourced candidates). Swap back to `postgres:16-alpine` if you only run fallback.
   postgres:
+    build:
+      context: ./backend/L2Knowledge_graph/deploy
+      dockerfile: postgres-age.Dockerfile
     image: apache/age:release_PG16_1.6.0
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: password
       POSTGRES_DB: maritime_crew
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
