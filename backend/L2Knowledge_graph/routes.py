@@ -27,6 +27,7 @@ from L2Knowledge_graph.entity_map import (
     traverse_crew,
 )
 from L2Knowledge_graph import ops_map
+from L2Knowledge_graph import org_map
 from L2Knowledge_graph.graph_db import GRAPH_NAME, age_enabled
 
 router = APIRouter(prefix="/graph", tags=["graph"])
@@ -202,3 +203,37 @@ async def opsmap_persist():
             "OpsMap API itself works under fallback without persisting.",
         )
     return await ops_map.persist_process_model()
+
+
+# ── OrgMap (L2 dimension 3 — organizational hierarchy overlay) ────────────────────
+# Company → Fleet → Vessel ownership + per-vessel rank manning, overlaid on the
+# existing EntityMap Vessel/Crew nodes. Requires AGE (the overlay lives in the graph).
+
+
+@router.get("/orgmap/summary")
+async def orgmap_summary():
+    """OrgMap population — per-label node counts (Company/Fleet/Rank + reused Vessel)
+    and per-type edge counts (OWNS/OPERATES/REQUIRES_RANK/HAS_RANK)."""
+    _require_age()
+    return await org_map.org_map_summary()
+
+
+@router.get("/orgmap/structure")
+async def orgmap_structure():
+    """The Company → Fleet → Vessel hierarchy as a React-Flow-ready graph."""
+    _require_age()
+    t0 = time.perf_counter()
+    graph = await org_map.org_structure()
+    graph["elapsed_ms"] = round((time.perf_counter() - t0) * 1000, 1)
+    return graph
+
+
+@router.get("/orgmap/manning-gap")
+async def orgmap_manning_gap(
+    company: str | None = Query(None, description="Scope to one company's whole fleet"),
+    fleet: str | None = Query(None, description="Scope to a single fleet"),
+):
+    """Headline OrgMap query — required vs. have headcount per rank for a company,
+    a fleet, or (no filter) the whole organization, with the staffing gap."""
+    _require_age()
+    return await org_map.manning_gap(company=company, fleet=fleet)

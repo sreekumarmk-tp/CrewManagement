@@ -278,6 +278,57 @@ export const opsMapApi = {
   getCases: () => api.get<OpsMapCases>("/graph/opsmap/cases").then(r => r.data),
 };
 
+// ── L2 Knowledge Graph (OrgMap — organizational hierarchy) ───────────────────────
+export interface OrgMapSummary {
+  graph: string;
+  dimension: "OrgMap";
+  labels: string[];
+  edge_types: string[];
+  nodes: Record<string, number>;
+  edges: Record<string, number>;
+  companies: string[];
+  fleets: string[];
+  total_nodes: number;
+  total_edges: number;
+}
+export interface OrgMapStructureNode {
+  id: string;
+  type: "Company" | "Fleet" | "Vessel";
+  label: string;
+}
+export interface OrgMapStructureEdge {
+  id: string;
+  source: string;
+  target: string;
+  label: string;       // OWNS | OPERATES
+}
+export interface OrgMapStructure {
+  dimension: "OrgMap";
+  nodes: OrgMapStructureNode[];
+  edges: OrgMapStructureEdge[];
+  total_nodes: number;
+  total_edges: number;
+  elapsed_ms?: number;
+}
+export interface OrgMapManningRow {
+  rank: string;
+  required: number;
+  have: number;
+  gap: number;
+}
+export interface OrgMapManningGap {
+  scope: { company: string | null; fleet: string | null; vessels: string[] };
+  rows: OrgMapManningRow[];
+  totals: { required: number; have: number; gap: number };
+}
+
+export const orgMapApi = {
+  getSummary: () => api.get<OrgMapSummary>("/graph/orgmap/summary").then(r => r.data),
+  getStructure: () => api.get<OrgMapStructure>("/graph/orgmap/structure").then(r => r.data),
+  getManningGap: (params: { company?: string; fleet?: string } = {}) =>
+    api.get<OrgMapManningGap>("/graph/orgmap/manning-gap", { params }).then(r => r.data),
+};
+
 // ── Decisions (L4 Decision Graph) ──────────────────────────────────────────────
 export const decisionApi = {
   list: (limit?: number) =>
