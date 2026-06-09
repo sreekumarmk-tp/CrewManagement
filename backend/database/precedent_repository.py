@@ -8,10 +8,14 @@ matching layer consults at the start of a sign-off.
 """
 from typing import Optional
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 
 from database.db import AsyncSessionLocal
 from database.placement_precedent_orm import PlacementPrecedent
+
+# Precedents recorded from seeded decisions carry the same 'demo-' workflow_id;
+# live placements never do, so this prefix safely isolates sample data.
+DEMO_PREFIX = "demo-"
 
 
 async def insert_precedent(record: dict) -> dict:
@@ -64,3 +68,18 @@ async def count_precedents() -> int:
     async with AsyncSessionLocal() as session:
         rows = (await session.execute(select(PlacementPrecedent.precedent_id))).all()
         return len(rows)
+
+
+async def delete_demo_precedents() -> int:
+    """Delete ONLY precedent rows recorded from seeded decisions (workflow_id
+    LIKE 'demo-%'). Live placements use a real workflow_id and are preserved.
+    Returns the number of rows removed.
+    """
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            delete(PlacementPrecedent).where(
+                PlacementPrecedent.workflow_id.like(f"{DEMO_PREFIX}%")
+            )
+        )
+        await session.commit()
+        return result.rowcount or 0

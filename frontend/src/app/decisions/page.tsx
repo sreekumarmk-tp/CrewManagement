@@ -9,7 +9,7 @@
  * `decision_outcome`, the list refetches. A "Seed demo data" button populates
  * mock decisions so the view is demoable without running a workflow.
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { motion } from "framer-motion";
 import toast, { Toaster } from "react-hot-toast";
@@ -37,13 +37,24 @@ const OUTCOME_BADGE: Record<string, { label: string; color: string; icon: React.
   pending: { label: "Pending", color: "#f59e0b", icon: <Clock className="w-3.5 h-3.5" /> },
 };
 
+// A decision row is seeded sample data (vs. a real live capture) when its
+// workflow_id carries the demo prefix that seed_demo() stamps on every mock row.
+const isSeedDecision = (d: DecisionTrace) => (d.workflow_id || "").startsWith("demo-");
+
 export default function DecisionsPage() {
   const { isConnected } = useWebSocket();
-  const events = useWorkflowStore((s) => s.events);
+  // Subscribe to ONLY decision-relevant events (not the full live-run stream) so a
+  // running workflow's flood of agent/tool events doesn't re-render this page.
+  const lastDecisionEvent = useWorkflowStore((s) => s.lastDecisionEvent);
+  // decision_ids surfaced by a live sign-off this session — the only live rows shown.
+  const liveDecisionIds = useWorkflowStore((s) => s.liveDecisionIds);
   const [decisions, setDecisions] = useState<DecisionTrace[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [seeding, setSeeding] = useState(false);
+  // When live decisions exist we hide the seed/sample rows by default and show only
+  // the real placements; this toggle lets the user bring the sample data back.
+  const [showSample, setShowSample] = useState(false);
   const lastRefreshKey = useRef<string>("");
 
   // Auto-play walkthrough: a queue of decision_ids and the current position.
@@ -110,43 +121,78 @@ export default function DecisionsPage() {
   }, [demoPos, demoQueue]);
 
   // Live refresh: a decision_logged / decision_outcome event means the table
-  // changed. On a freshly LOGGED decision (a real sign-off), auto-select it so
-  // its flow animates step-by-step; its outcome node then updates live when the
-  // decision_outcome event lands after compliance. A running seed walkthrough is
-  // never interrupted (guarded by demoActiveRef).
+  // changed. On a freshly LOGGED decision (a real sign-off), switch to the live
+  // view and auto-select it so its flow animates step-by-step; its outcome node
+  // then updates live when the decision_outcome event lands after compliance. A
+  // running seed walkthrough is never interrupted (guarded by demoActiveRef).
   useEffect(() => {
-    const latest = events[0];
+    const latest = lastDecisionEvent;
     if (!latest) return;
-
-    // Precedent Index consulted at the start of a sign-off (before the decision
-    // is logged) — surface it as a toast so the lookup is visible live.
-    if (latest.event_type === "precedent_consulted") {
-      const key = `precedent:${latest.timestamp}`;
-      if (key !== lastRefreshKey.current) {
-        lastRefreshKey.current = key;
-        const d = latest.data || {};
-        if (!demoActiveRef.current) {
-          toast(
-            d.is_repeat
-              ? `Precedent Index: ${d.count} prior placement(s) for ${d.rank} @ ${d.port}`
-              : `Precedent Index: first placement for ${d.rank} @ ${d.port}`,
-            { icon: "📚" }
-          );
-        }
-      }
-      return;
-    }
-
-    if (latest.event_type !== "decision_logged" && latest.event_type !== "decision_outcome") return;
 
     const key = `${latest.event_type}:${latest.timestamp}`;
     if (key === lastRefreshKey.current) return;
     lastRefreshKey.current = key;
 
-    const newId = latest.data?.decision_id as string | undefined;
+    const data = latest.data || {};
+
+    // Precedent Index consulted at the start of a sign-off (before the decision
+    // is logged) — surface it as a toast so the lookup is visible live.
+    if (latest.event_type === "precedent_consulted") {
+      if (!demoActiveRef.current) {
+        toast(
+          data.is_repeat
+            ? `Precedent Index: ${data.count} prior placement(s) for ${data.rank} @ ${data.port}`
+            : `Precedent Index: first placement for ${data.rank} @ ${data.port}`,
+          { icon: "📚" }
+        );
+      }
+      return;
+    }
+
+    // A live compliance verdict landed — possibly after a reject→retry. These events
+    // carry the full attempts journey + winner, so patch the matching live decision
+    // directly: that drives the Decision Graph's reject→retry→sign-on flow even if
+    // the backend's outcome-stamp (decision_outcome) was missed. Apply optimistically
+    // now, and again after a reconciling load() so the patch always wins over a row
+    // the DB may still have as pending.
+    if (latest.event_type === "crew_signed_on" || latest.event_type === "sign_on_rejected") {
+      const wfId = (latest.workflow_id as string) || (data.workflow_id as string) || "";
+      if (!wfId) return;
+      const signedOn = latest.event_type === "crew_signed_on";
+      const patch = (d: DecisionTrace): DecisionTrace =>
+        d.workflow_id !== wfId
+          ? d
+          : {
+              ...d,
+              outcome_status: signedOn ? "signed_on" : "rejected",
+              compliance_status: (data.compliance_status as string) ?? d.compliance_status,
+              compliance_score: (data.compliance_score as number) ?? d.compliance_score,
+              attempts: (data.attempts as ComplianceAttempt[]) ?? d.attempts,
+              outcome_reasons:
+                ((signedOn ? data.warnings : data.failures) as string[]) ?? d.outcome_reasons,
+              chosen_crew: data.crew_id
+                ? {
+                    crew_id: data.crew_id as string,
+                    name: data.crew_name as string,
+                    rank: data.crew_rank as string,
+                  }
+                : d.chosen_crew,
+              chosen_crew_id: (data.crew_id as string) ?? d.chosen_crew_id,
+              pending_reason: undefined,
+            };
+      setDecisions((prev) => prev.map(patch));
+      load().then(() => setDecisions((prev) => prev.map(patch)));
+      return;
+    }
+
+    const newId = data.decision_id as string | undefined;
     load().then(() => {
       if (latest.event_type === "decision_logged" && !demoActiveRef.current && newId) {
         toast.success("New decision — showing live flow");
+        // A real sign-off arrived: drop the seed walkthrough, surface live data
+        // only, and focus this crew member's decision.
+        stopDemo();
+        setShowSample(false);
         // Re-gate this id so its outcome label waits for the graph to reach the
         // outcome node, then auto-select it to kick off the step-by-step reveal.
         setRevealedOutcomes((prev) => {
@@ -157,16 +203,50 @@ export default function DecisionsPage() {
       }
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [events]);
+  }, [lastDecisionEvent]);
+
+  // Safety net: a live sign-off just started (precedent consulted) or a decision was
+  // logged → poll the list a few times so the capture/outcome still lands even if a
+  // WebSocket event was missed (e.g. the tab was mid-navigation). Self-limiting: it
+  // runs a bounded burst, not a perpetual poll.
+  useEffect(() => {
+    const t = lastDecisionEvent?.event_type;
+    if (t !== "precedent_consulted" && t !== "decision_logged") return;
+    let ticks = 0;
+    const id = setInterval(() => {
+      ticks += 1;
+      load();
+      if (ticks >= 6) clearInterval(id); // ~24s of follow-up at 4s cadence
+    }, 4000);
+    return () => clearInterval(id);
+  }, [lastDecisionEvent, load]);
+
+  // The tab starts EMPTY and only fills on demand:
+  //   • SEED/sample rows show after the user clicks Seed (showSample).
+  //   • LIVE rows show only for sign-offs surfaced THIS session (liveDecisionIds),
+  //     not for every decision already persisted in the DB.
+  const visibleDecisions = useMemo(
+    () =>
+      decisions.filter((d) =>
+        isSeedDecision(d) ? showSample : liveDecisionIds.includes(d.decision_id)
+      ),
+    [decisions, showSample, liveDecisionIds]
+  );
 
   const handleSeed = async () => {
     setSeeding(true);
     try {
       const res = await decisionApi.seedDemo();
-      toast.success(`Seeded ${res.seeded} decisions — playing walkthrough`);
+      // Seeding is idempotent: an existing sample set is replayed, not duplicated.
+      toast.success(
+        res.already_present
+          ? "Sample data already present — replaying walkthrough"
+          : `Seeded ${res.seeded} decisions — playing walkthrough`
+      );
       const list = await load();
-      // Walk the list as displayed: top to bottom.
-      startDemo(list.map((d) => d.decision_id));
+      // Seeding is an explicit demo action — surface the sample rows and walk them.
+      setShowSample(true);
+      startDemo(list.filter(isSeedDecision).map((d) => d.decision_id));
     } catch {
       toast.error("Failed to seed demo data");
     } finally {
@@ -175,7 +255,7 @@ export default function DecisionsPage() {
   };
 
   // Replay the walkthrough over the decisions as displayed, top to bottom.
-  const handlePlay = () => startDemo(decisions.map((d) => d.decision_id));
+  const handlePlay = () => startDemo(visibleDecisions.map((d) => d.decision_id));
 
   const selectCard = (id: string) => {
     stopDemo();         // any manual click takes over from the walkthrough
@@ -247,7 +327,7 @@ export default function DecisionsPage() {
             ) : (
               <button
                 onClick={handlePlay}
-                disabled={decisions.length === 0}
+                disabled={visibleDecisions.length === 0}
                 className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-sm glass border border-ocean-border/40 text-gray-300 hover:text-white disabled:opacity-40 transition"
               >
                 <Play className="w-3.5 h-3.5" /> Play
@@ -295,7 +375,7 @@ export default function DecisionsPage() {
             decisions whose outcome has been revealed so far (the walkthrough reveals
             them one crew member at a time), so counts/reject-rate/recurring-gap start
             at zero and grow as each outcome lands. */}
-        <PatternPanel decisions={decisions.filter((d) => revealedOutcomes.has(d.decision_id))} />
+        <PatternPanel decisions={visibleDecisions.filter((d) => revealedOutcomes.has(d.decision_id))} />
 
         {/* L4 #3 — Structural Embeddings made visible: pick a crew member, see the
             structurally nearest crew (pgvector / fallback). */}
@@ -309,7 +389,7 @@ export default function DecisionsPage() {
                 <div className="w-10 h-10 border-4 border-ocean-accent/30 border-t-ocean-accent rounded-full animate-spin" />
                 <p className="text-gray-400 text-sm">Loading decisions…</p>
               </div>
-            ) : decisions.length === 0 ? (
+            ) : visibleDecisions.length === 0 ? (
               <div className="glass rounded-2xl p-8 text-center">
                 <GitBranch className="w-8 h-8 text-ocean-accent/40 mx-auto mb-3" />
                 <p className="text-sm text-gray-300">No decisions captured yet</p>
@@ -318,7 +398,7 @@ export default function DecisionsPage() {
                 </p>
               </div>
             ) : (
-              decisions.map((d) => (
+              visibleDecisions.map((d) => (
                 <DecisionCard
                   key={d.decision_id}
                   decision={d}

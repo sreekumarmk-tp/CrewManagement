@@ -396,6 +396,72 @@ class WorkflowService:
             master = MasterAgent(event_callback=self._event_callback)
             updated = await master.orchestrate_compliance(workflow, candidate, port)
             await state_service.update_workflow(updated)
+
+            # Stamp the decision outcome + emit the verdict so the L4 Decision Graph
+            # resolves (mirrors the auto path). Without this, a manual sign-on leaves
+            # the captured decision stuck on 'pending'. Single-candidate path (no
+            # retry loop), so attempts has one entry.
+            report = (updated.compliance_result or {}).get("compliance_report") or {}
+            subgraph = (updated.compliance_result or {}).get("compliance_subgraph")
+            status = report.get("overall_status", "unknown")
+            score = report.get("compliance_score")
+            warnings = report.get("warnings", []) or []
+            failures = report.get("failures", []) or []
+            recommendation = report.get("recommendation")
+            cid = candidate.get("crew_id")
+            attempt = {
+                "order": 1, "crew_id": cid, "name": candidate.get("name"),
+                "rank": candidate.get("rank"), "compliance_status": status,
+                "compliance_score": score, "failures": failures, "warnings": warnings,
+            }
+            signed = status in ("passed", "warning")
+
+            if signed:
+                chosen_crew = {
+                    "crew_id": cid, "name": candidate.get("name"), "rank": candidate.get("rank"),
+                    "grade": candidate.get("grade"), "port": candidate.get("port"),
+                    "nationality": candidate.get("nationality"),
+                }
+                updated_decision = await decision_trace_service.record_outcome(
+                    workflow.workflow_id,
+                    outcome_status="signed_on",
+                    compliance_status=status, compliance_score=score,
+                    outcome_reasons=warnings, attempts=[attempt],
+                    chosen_crew=chosen_crew, chosen_crew_id=cid,
+                    broadcast=self._event_callback,
+                )
+                if updated_decision:
+                    await precedent_service.record_placement(updated_decision)
+                await update_crew(cid, pool="signoff", status="Onboard")
+                await self._event_callback("crew_signed_on", "Compliance Agent", {
+                    "workflow_id": workflow.workflow_id,
+                    "crew_id": cid, "crew_name": candidate.get("name"),
+                    "crew_rank": candidate.get("rank"),
+                    "compliance_status": status, "compliance_score": score,
+                    "warnings": warnings, "recommendation": recommendation,
+                    "subgraph": subgraph, "attempts": [attempt],
+                    "message": f"{candidate.get('name')} cleared compliance ({status}, {score}%)",
+                })
+            else:
+                updated_decision = await decision_trace_service.record_outcome(
+                    workflow.workflow_id,
+                    outcome_status="rejected",
+                    compliance_status=status, compliance_score=score,
+                    outcome_reasons=failures, attempts=[attempt],
+                    broadcast=self._event_callback,
+                )
+                if updated_decision:
+                    await precedent_service.record_placement(updated_decision)
+                await self._event_callback("sign_on_rejected", "Compliance Agent", {
+                    "workflow_id": workflow.workflow_id,
+                    "crew_id": cid, "crew_name": candidate.get("name"),
+                    "crew_rank": candidate.get("rank"),
+                    "compliance_status": status, "compliance_score": score,
+                    "failures": failures, "recommendation": recommendation,
+                    "subgraph": subgraph, "attempts": [attempt],
+                    "message": f"{candidate.get('name')} did not clear compliance ({status}) — not signed on",
+                })
+
             log.info("compliance.orchestration.complete", workflow_id=workflow.workflow_id)
         except Exception as exc:
             log.error("compliance.orchestration.error", error=str(exc))

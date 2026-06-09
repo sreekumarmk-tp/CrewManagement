@@ -66,6 +66,21 @@ interface WorkflowStore {
   addEvent: (e: WSEvent) => void;
   clearEvents: () => void;
 
+  // The latest DECISION-relevant event only (decision_logged / decision_outcome /
+  // precedent_consulted). The Decisions page subscribes to this instead of the full
+  // `events` array so a live run's flood of agent/tool events doesn't re-render it.
+  lastDecisionEvent: WSEvent | null;
+
+  // decision_ids surfaced by a LIVE sign-off this session (from decision_logged).
+  // The Decisions page shows only these live rows — not every decision already
+  // persisted in the DB — so the tab starts empty until a sign-off or a seed.
+  liveDecisionIds: string[];
+
+  // WebSocket connection status, driven by the singleton socket so it updates
+  // reactively (the old per-page hook read a ref that never triggered a re-render).
+  wsConnected: boolean;
+  setWsConnected: (v: boolean) => void;
+
   // Sign-on outcome for the active workflow: which crew was matched + the
   // compliance verdict (signed on / rejected + reasons).
   signOnOutcome: SignOnOutcome | null;
@@ -139,9 +154,37 @@ export const useWorkflowStore = create<WorkflowStore>()(
         set((s) => ({ events: [e, ...s.events].slice(0, 2000) })),
       clearEvents: () => set({ events: [] }),
 
+      lastDecisionEvent: null,
+      liveDecisionIds: [],
+
+      wsConnected: false,
+      setWsConnected: (v) => set({ wsConnected: v }),
+
       handleWSEvent: (event) => {
         const { updateAgentState, updateActiveWorkflow, setMatchedCandidate, addEvent } = get();
         addEvent(event);
+
+        // Surface decision-relevant events on a dedicated slot so the Decisions
+        // page can react to just these (not the full live-run event stream).
+        if (
+          event.event_type === "decision_logged" ||
+          event.event_type === "decision_outcome" ||
+          event.event_type === "precedent_consulted" ||
+          // The compliance verdict (incl. the reject→retry journey) — used to drive
+          // the Decision Graph's outcome even if the DB outcome-stamp was missed.
+          event.event_type === "crew_signed_on" ||
+          event.event_type === "sign_on_rejected"
+        ) {
+          set({ lastDecisionEvent: event });
+        }
+        // Remember which live decisions were surfaced this session so the Decisions
+        // page can show only those (not every row already in the DB).
+        if (event.event_type === "decision_logged") {
+          const id = (event.data || {}).decision_id as string | undefined;
+          if (id && !get().liveDecisionIds.includes(id)) {
+            set({ liveDecisionIds: [...get().liveDecisionIds, id] });
+          }
+        }
 
         const agentName = event.agent_name || "Master Agent";
         const data = event.data || {};

@@ -21,8 +21,19 @@ async def get_decisions(limit: int = 50):
 
 @router.post("/demo-seed", response_model=dict)
 async def seed_demo_decisions():
-    """Insert mock decision traces for demoing the L4 view without a live workflow."""
+    """Insert mock decision traces for demoing the L4 view without a live workflow.
+
+    Idempotent: if sample data already exists it is returned for replay rather than
+    re-inserted, so repeated calls don't pile up duplicate rows.
+    """
     return await decision_trace_service.seed_demo()
+
+
+@router.delete("/demo-seed", response_model=dict)
+async def clear_demo_decisions():
+    """Remove ONLY seeded/sample rows (workflow_id LIKE 'demo-%') from the decision
+    and precedent stores. Live placements and real precedent history are preserved."""
+    return await decision_trace_service.clear_demo()
 
 
 @router.get("/{decision_id}", response_model=dict)

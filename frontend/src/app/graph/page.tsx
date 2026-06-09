@@ -9,8 +9,7 @@ import Link from "next/link";
 import toast, { Toaster } from "react-hot-toast";
 import {
   Anchor, Ship, Activity, BarChart3, Share2, Search, X, Loader2, Database,
-  ArrowRight, ArrowLeft, Route,
-  ArrowRight, ArrowLeft, GitBranch,
+  ArrowRight, ArrowLeft, Route, GitBranch,
 } from "lucide-react";
 
 import {
