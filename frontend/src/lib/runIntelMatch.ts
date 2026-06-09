@@ -9,20 +9,34 @@ import { useWorkflowStore } from "@/store/workflowStore";
 import { intelligenceApi } from "@/lib/api";
 import type { CrewMember, IntelResult } from "@/types";
 
-// After a match resolves: persist it, and (when matched) have the agent sign on #1.
-async function finalize(result: IntelResult): Promise<void> {
+// Options that let a caller run L3 alongside another flow (e.g. the managed-agents
+// workflow) without L3 stealing the foreground or pre-empting a human sign-on.
+export interface RunIntelOptions {
+  // false → the agent does NOT auto-sign-on #1 (the managed workflow's human-confirmed
+  // sign-on owns that). Default true (standalone L3 behaviour).
+  autoSignOn?: boolean;
+  // false → don't switch to the Shortlist tab (let the agents' Sign-On view stay).
+  // Default true.
+  switchToShortlist?: boolean;
+}
+
+// After a match resolves: persist it, and (when matched + allowed) have the agent sign on #1.
+async function finalize(result: IntelResult, opts: RunIntelOptions = {}): Promise<void> {
+  const { autoSignOn = true, switchToShortlist = true } = opts;
   const s = useWorkflowStore.getState();
   s.setIntelResult(result); // authoritative; the live trace already arrived via WS
 
   if (result.status === "no_crew_found") {
-    s.setActiveTab("shortlist"); // show the graceful dead-end where the shortlist lives
+    if (switchToShortlist) s.setActiveTab("shortlist");
     return;
   }
 
   const top = result.candidates.find((c) => c.rank_position === 1) ?? result.candidates[0];
   if (result.status !== "matched" || !top) return;
 
-  s.setActiveTab("shortlist");
+  if (switchToShortlist) s.setActiveTab("shortlist");
+  if (!autoSignOn) return; // the managed workflow owns the sign-on in the combined flow
+
   s.setIntelSigningOn(true);
   try {
     await intelligenceApi.signOn(
@@ -55,26 +69,26 @@ function fail(err: unknown): void {
  * The supervisor derives the vacancy (rank, grade, vessel, port) from THIS person's
  * record, then delegates to the three investigators.
  */
-export async function runIntelByCrew(crew: CrewMember): Promise<void> {
+export async function runIntelByCrew(crew: CrewMember, opts: RunIntelOptions = {}): Promise<void> {
   const s = useWorkflowStore.getState();
   s.startIntelRun(crew.rank, crew.port, {
     crewId: crew.crew_id, name: crew.name, rank: crew.rank, vessel: crew.vessel, port: crew.port,
   });
   try {
     const result = await intelligenceApi.match(crew.crew_id, 3);
-    await finalize(result);
+    await finalize(result, opts);
   } catch (err) {
     fail(err);
   }
 }
 
 /** Ad-hoc match for an explicit vacancy (rank + port), no departing crew member. */
-export async function runIntelByContext(rank: string, port?: string): Promise<void> {
+export async function runIntelByContext(rank: string, port?: string, opts: RunIntelOptions = {}): Promise<void> {
   const s = useWorkflowStore.getState();
   s.startIntelRun(rank, port, null);
   try {
     const result = await intelligenceApi.matchContext(rank, port, 3);
-    await finalize(result);
+    await finalize(result, opts);
   } catch (err) {
     fail(err);
   }

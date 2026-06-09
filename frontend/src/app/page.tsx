@@ -27,7 +27,7 @@ export default function DashboardPage() {
     activeTab, setActiveTab,
     signOnCrew, signOffCrew,
     setSignOnCrew, setSignOffCrew,
-    activeWorkflow, events, intel,
+    activeWorkflow, setActiveWorkflow, events, intel,
   } = useWorkflowStore();
 
   const { isConnected } = useWebSocket();
@@ -67,10 +67,12 @@ export default function DashboardPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [events]);
 
-  // Sign-off → the L3 Intelligence agents analyse THIS departing crew member and
-  // shortlist replacements (Supervisor → 3 investigators → ranked top-3 → auto sign-on
-  // #1 → Shortlist tab). The supervisor derives the vacancy from the crew member's
-  // own record (rank, grade, vessel, port) via /intelligence/match.
+  // Sign-off fires BOTH flows for the departing crew member:
+  //   1. The managed-agents workflow (Master orchestrator -> Crew Matching / Travel /
+  //      Notification in parallel, then human-confirmed Compliance on sign-on) — as before.
+  //   2. The L3 Intelligence Graph match — populates the Shortlist + explainability.
+  // L3's auto sign-on is suppressed here so it doesn't pre-empt the agents' human-in-the-
+  // loop sign-on; the Shortlist tab stays available but we land on Sign-On (the agents' view).
   const handleInitiateSignOff = async (crewId: string, crewName: string) => {
     const crew = signOffCrew.find((c) => c.crew_id === crewId);
     if (!crew) {
@@ -78,9 +80,33 @@ export default function DashboardPage() {
       return;
     }
     setInitiatingSignOff(crewId);
-    toast.success(`Analysing replacements for ${crewName}…`);
+    // L3 (free, deterministic) — runs in the background; no auto sign-on, no tab steal.
+    runIntelByCrew(crew, { autoSignOn: false, switchToShortlist: false });
     try {
-      await runIntelByCrew(crew); // owns its own result/sign-on/tab handling + errors
+      // Managed orchestrator + specialist agents (uses the Claude API).
+      const result = await workflowApi.initiateSignOff(crewId, "Contract completion");
+      const now = new Date().toISOString();
+      setActiveWorkflow({
+        workflow_id: result.workflow_id,
+        status: "running",
+        trigger: "sign_off",
+        sign_off_crew_id: crewId,
+        sign_off_crew: crew,
+        agent_executions: [],
+        timeline: [],
+        memory: {},
+        created_at: now,
+        updated_at: now,
+        total_tokens: 0,
+        total_cost: 0,
+        total_duration_ms: 0,
+      });
+      useWorkflowStore.getState().setShowWorkflowPanel(true);
+      setActiveTab("sign-on");
+      toast.success(`Sign-off initiated for ${crewName} — agents + intelligence running`);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Failed to initiate sign-off";
+      toast.error(message);
     } finally {
       setInitiatingSignOff(null);
     }
