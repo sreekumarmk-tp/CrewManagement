@@ -5,17 +5,20 @@ import Link from "next/link";
 import toast, { Toaster } from "react-hot-toast";
 import {
   Ship, Users, Activity, BarChart3, Radio, Bell,
-  Wifi, WifiOff, Anchor, Navigation, RefreshCw, Database, Share2, GitBranch
+  Wifi, WifiOff, Anchor, Navigation, RefreshCw, Database, Share2, GitBranch, Trophy
 } from "lucide-react";
 
 import { useWorkflowStore } from "@/store/workflowStore";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import { useCrew } from "@/hooks/useCrew";
 import { workflowApi } from "@/lib/api";
+import { runIntelByCrew } from "@/lib/runIntelMatch";
 import SignOffTab from "@/components/dashboard/SignOffTab";
 import SignOnTab from "@/components/dashboard/SignOnTab";
+import ShortlistTab from "@/components/dashboard/ShortlistTab";
 import SignOnOutcomeCard from "@/components/dashboard/SignOnOutcomeCard";
 import ComplianceGraph from "@/components/compliance/ComplianceGraph";
+import IntelligencePanel from "@/components/intelligence/IntelligencePanel";
 import AgentOrchestrationPanel from "@/components/agents/AgentOrchestrationPanel";
 import WorkflowTimeline from "@/components/workflow/WorkflowTimeline";
 
@@ -24,7 +27,7 @@ export default function DashboardPage() {
     activeTab, setActiveTab,
     signOnCrew, signOffCrew,
     setSignOnCrew, setSignOffCrew,
-    activeWorkflow, events,
+    activeWorkflow, events, intel,
   } = useWorkflowStore();
 
   const { isConnected } = useWebSocket();
@@ -64,16 +67,20 @@ export default function DashboardPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [events]);
 
+  // Sign-off → the L3 Intelligence agents analyse THIS departing crew member and
+  // shortlist replacements (Supervisor → 3 investigators → ranked top-3 → auto sign-on
+  // #1 → Shortlist tab). The supervisor derives the vacancy from the crew member's
+  // own record (rank, grade, vessel, port) via /intelligence/match.
   const handleInitiateSignOff = async (crewId: string, crewName: string) => {
+    const crew = signOffCrew.find((c) => c.crew_id === crewId);
+    if (!crew) {
+      toast.error("Crew member not found");
+      return;
+    }
     setInitiatingSignOff(crewId);
+    toast.success(`Analysing replacements for ${crewName}…`);
     try {
-      const result = await workflowApi.initiateSignOff(crewId, "Contract completion");
-      toast.success(`Sign-off initiated for ${crewName}`);
-      useWorkflowStore.getState().setShowWorkflowPanel(true);
-      setActiveTab("sign-on");
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : "Failed to initiate sign-off";
-      toast.error(message);
+      await runIntelByCrew(crew); // owns its own result/sign-on/tab handling + errors
     } finally {
       setInitiatingSignOff(null);
     }
@@ -169,29 +176,30 @@ export default function DashboardPage() {
           {/* Tab switcher + SWR cache state (Step 4) */}
           <div className="flex items-center justify-between gap-3">
           <div className="glass rounded-2xl p-1 flex gap-1 w-fit">
-            {(["sign-off", "sign-on"] as const).map((tab) => (
-              <button
-                key={tab}
-                onClick={() => setActiveTab(tab)}
-                className={`px-6 py-2.5 rounded-xl text-sm font-medium transition-all duration-200 ${
-                  activeTab === tab
-                    ? "bg-accent-gradient text-white shadow-lg"
-                    : "text-gray-400 hover:text-white hover:bg-ocean-border/30"
-                }`}
-              >
-                {tab === "sign-off" ? (
+            {(["sign-off", "sign-on", "shortlist"] as const).map((tab) => {
+              const meta = {
+                "sign-off": { icon: Ship, label: "Sign Off", count: signOffCrew.length },
+                "sign-on": { icon: Users, label: "Sign On", count: signOnCrew.length },
+                "shortlist": { icon: Trophy, label: "Shortlist", count: intel.result?.candidates.length ?? 0 },
+              }[tab];
+              const Icon = meta.icon;
+              return (
+                <button
+                  key={tab}
+                  onClick={() => setActiveTab(tab)}
+                  className={`px-6 py-2.5 rounded-xl text-sm font-medium transition-all duration-200 ${
+                    activeTab === tab
+                      ? "bg-accent-gradient text-white shadow-lg"
+                      : "text-gray-400 hover:text-white hover:bg-ocean-border/30"
+                  }`}
+                >
                   <span className="flex items-center gap-2">
-                    <Ship className="w-4 h-4" /> Sign Off
-                    <span className="bg-white/20 rounded-full px-1.5 text-xs">{signOffCrew.length}</span>
+                    <Icon className="w-4 h-4" /> {meta.label}
+                    <span className="bg-white/20 rounded-full px-1.5 text-xs">{meta.count}</span>
                   </span>
-                ) : (
-                  <span className="flex items-center gap-2">
-                    <Users className="w-4 h-4" /> Sign On
-                    <span className="bg-white/20 rounded-full px-1.5 text-xs">{signOnCrew.length}</span>
-                  </span>
-                )}
-              </button>
-            ))}
+                </button>
+              );
+            })}
           </div>
             <CrewCacheBadge validating={crewValidating} />
           </div>
@@ -222,7 +230,7 @@ export default function DashboardPage() {
                   onInitiateSignOff={handleInitiateSignOff}
                 />
               </motion.div>
-            ) : (
+            ) : activeTab === "sign-on" ? (
               <motion.div
                 key="signon"
                 initial={{ opacity: 0, x: 20 }}
@@ -232,6 +240,16 @@ export default function DashboardPage() {
               >
                 <SignOnTab crew={signOnCrew} onSignOn={handleSignOn} />
               </motion.div>
+            ) : (
+              <motion.div
+                key="shortlist"
+                initial={{ opacity: 0, x: 20 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: 20 }}
+                transition={{ duration: 0.3 }}
+              >
+                <ShortlistTab />
+              </motion.div>
             )}
           </AnimatePresence>
         </div>
@@ -239,6 +257,7 @@ export default function DashboardPage() {
         {/* ── Right: Agent Panel (4 cols) ───────────────────────────────────── */}
         <div className="col-span-12 xl:col-span-4 space-y-4">
           <SignOnOutcomeCard />
+          <IntelligencePanel />
           <ComplianceGraph />
           <AgentOrchestrationPanel />
           {activeWorkflow && <WorkflowTimeline workflow={activeWorkflow} />}
