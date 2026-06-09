@@ -14,7 +14,7 @@ from typing import Any, Dict, List
 
 import structlog
 
-from database.graph_db import age_enabled, run_cypher
+from L2Knowledge_graph.graph_db import age_enabled, run_cypher
 
 log = structlog.get_logger()
 

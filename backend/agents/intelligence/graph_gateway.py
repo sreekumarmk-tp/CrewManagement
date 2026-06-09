@@ -15,12 +15,12 @@ from typing import Any, Dict, List
 
 import structlog
 
-from database.compliance_graph import (
+from L2Knowledge_graph.compliance_graph import (
     PORT_RESTRICTIONS,
     build_compliance_subgraph,
     required_certs_for_rank,
 )
-from database.graph_db import age_enabled, run_cypher
+from L2Knowledge_graph.graph_db import age_enabled, run_cypher
 
 log = structlog.get_logger()
 
