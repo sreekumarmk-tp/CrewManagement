@@ -1,9 +1,11 @@
 """Canonical e-mail metadata → SignalEvent mapping (shared Gmail/Outlook).
 
-Both e-mail providers normalize to the same flat metadata record
-(``from``/``to``/``cc``/``subject``/``thread_id``/``sent_at``/``labels``) and the
-same sign-off rule, so the record→SignalEvent step lives here once. Body is never
-present in the record — these are metadata connectors by design.
+Both e-mail providers normalize to the same flat record
+(``from``/``to``/``cc``/``subject``/``thread_id``/``sent_at``/``labels`` and,
+when the server's ``EMAIL_INGEST_BODY`` is on, ``body``) and the same sign-off
+rule, so the record→SignalEvent step lives here once. The body is carried as the
+event's ``text`` (the same field Slack uses), so crew-change parsing and the L2
+projection see the content; it is empty for a metadata-only fetch.
 """
 
 from __future__ import annotations
@@ -58,7 +60,8 @@ def email_record_to_signal(
             "thread_id": record.get("thread_id"),
             "sent_at": record.get("sent_at"),
             "labels": record.get("labels", []),
-            # body intentionally absent — metadata only
+            # body content as ``text`` when EMAIL_INGEST_BODY is on; "" otherwise
+            "text": record.get("body") or "",
         },
         timestamp=_parse_dt(record.get("sent_at")),
         lineage=Lineage(extraction_id=f"{extraction_prefix}-{message_id}",

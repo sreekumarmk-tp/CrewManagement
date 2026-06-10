@@ -109,6 +109,13 @@ class Settings:
     database_outbox_table: str = os.getenv("DATABASE_OUTBOX_TABLE", "signal_outbox")
     database_watermark_path: str = os.getenv("DATABASE_WATERMARK_PATH", "")
 
+    # E-mail body ingestion. When on, the Gmail/Outlook connectors fetch and
+    # carry the message **body** (not just From/To/Subject metadata) so the L2
+    # record and crew-change parsing see the full content. This relaxes the
+    # metadata-only privacy boundary the connectors otherwise enforce; set
+    # EMAIL_INGEST_BODY=0 to restore metadata-only ingestion.
+    email_ingest_body: bool = _flag("EMAIL_INGEST_BODY", True)
+
     # L2 store (append-only JSONL written by the demo L2 sink)
     l2_store_path: str = os.getenv("L2_STORE_PATH", "./data/l2_store.jsonl")
 

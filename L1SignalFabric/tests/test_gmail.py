@@ -31,6 +31,7 @@ def test_verify_token_and_dev_bypass():
 
 
 def test_metadata_record_extraction_no_body():
+    # a format=metadata payload has no body parts → empty body, snippet absent
     msg = {"id": "m1", "threadId": "th1", "internalDate": "1717236000000",
            "labelIds": ["INBOX"], "payload": {"headers": [
                {"name": "From", "value": "a@x"},
@@ -39,7 +40,36 @@ def test_metadata_record_extraction_no_body():
     rec = message_metadata_to_record(msg)
     assert rec["from"] == "a@x"
     assert rec["to"] == ["b@y", "c@z"]
-    assert "body" not in rec and rec["snippet_present"] is False
+    assert rec["body"] == "" and rec["snippet_present"] is False
+
+
+def test_full_payload_body_extraction():
+    # a format=full payload → body decoded from the text/plain part (EMAIL_INGEST_BODY)
+    body = "Sign-off: Andreas Pappas (Bosun) - MV Mediterranean Queen at Piraeus"
+    b64 = base64.urlsafe_b64encode(body.encode()).decode().rstrip("=")
+    msg = {"id": "m2", "threadId": "th2", "internalDate": "1717236000000",
+           "labelIds": ["INBOX"], "payload": {
+               "mimeType": "multipart/alternative",
+               "headers": [{"name": "Subject", "value": "Sign-off"}],
+               "parts": [
+                   {"mimeType": "text/plain", "body": {"data": b64}},
+                   {"mimeType": "text/html",
+                    "body": {"data": base64.urlsafe_b64encode(b"<p>ignored</p>").decode().rstrip("=")}},
+               ]}}
+    rec = message_metadata_to_record(msg)
+    assert rec["body"] == body and rec["snippet_present"] is True
+    # body rides through as the event's ``text`` (the field crew-parsing reads)
+    sig = record_to_signal(rec, "t")
+    assert sig.data["text"] == body
+
+
+def test_html_only_body_is_tag_stripped():
+    html = "<p>Sign-off: <b>Diego Silva</b> (Oiler) MV Pacific Dawn at Rotterdam</p>"
+    b64 = base64.urlsafe_b64encode(html.encode()).decode().rstrip("=")
+    msg = {"id": "m3", "internalDate": "1717236000000", "labelIds": [],
+           "payload": {"mimeType": "text/html", "body": {"data": b64}, "headers": []}}
+    rec = message_metadata_to_record(msg)
+    assert "<" not in rec["body"] and "Diego Silva" in rec["body"]
 
 
 def test_signoff_intent_set():
@@ -69,7 +99,7 @@ def test_history_expansion_with_client_advances_watermark():
         def history_list(self, start):
             yield {"id": "100", "messagesAdded": [{"message": {"id": "m1"}}]}
 
-        def get_message_metadata(self, mid):
+        def get_message(self, mid):
             return {"id": mid, "internalDate": "1717236000000", "labelIds": [],
                     "payload": {"headers": [{"name": "From", "value": "a@x"},
                                             {"name": "Subject", "value": "s"}]}}

@@ -1,11 +1,16 @@
-"""Gmail API client — metadata-only, on the shared rate-limited HTTP spine.
+"""Gmail API client — on the shared rate-limited HTTP spine.
 
 Talks directly to the Gmail REST API (``gmail.googleapis.com/gmail/v1``) with a
 bearer access token, so no ``google-api-python-client`` dependency is needed.
 
-**Metadata only** — message bodies are never fetched (``format=metadata`` with an
-explicit allow-list of headers). This is the privacy boundary the L1 plan
-mandates for Gmail: From/To/Cc/Subject/Date + thread + labels, never content.
+Fetch scope is controlled by ``ingest_body``:
+
+  * **metadata only** (default) — ``format=metadata`` with an explicit allow-list
+    of headers: From/To/Cc/Subject/Date + thread + labels, never content. This is
+    the privacy boundary the L1 plan mandates for Gmail.
+  * **full** (``ingest_body=True``) — ``format=full`` so the message body is
+    fetched too (decoded downstream in the mapper). Enabled by the server via the
+    ``EMAIL_INGEST_BODY`` setting.
 
 Endpoints: users.watch · users.history.list · users.messages.get ·
 users.messages.list · users.getProfile
@@ -30,9 +35,11 @@ class GmailClient:
         user_id: str = "me",
         rate_limit_delay_ms: int = 200,
         max_rate_limit_errors: int = 3,
+        ingest_body: bool = False,
     ) -> None:
         self.logger = logger or StructuredLogger(console_output=False)
         self.user_id = user_id
+        self.ingest_body = ingest_body
         # ``access_token`` may be a literal bearer string (short-lived, e.g. an
         # OAuth Playground token) or a callable that returns a fresh token on
         # demand (the refresh-token flow — see connectors.gmail.auth). Normalise
@@ -104,9 +111,17 @@ class GmailClient:
             if not page_token:
                 return
 
-    def get_message_metadata(self, message_id: str) -> Dict[str, Any]:
-        """Fetch a single message in **metadata** format (no body)."""
-        return self._http.get(
-            self._u(f"messages/{message_id}"),
-            params={"format": "metadata", "metadataHeaders": METADATA_HEADERS},
-        )
+    def get_message(self, message_id: str) -> Dict[str, Any]:
+        """Fetch a single message.
+
+        ``format=full`` (headers + decoded body parts) when ``ingest_body`` is on,
+        else ``format=metadata`` with the header allow-list (no body).
+        """
+        if self.ingest_body:
+            params: Dict[str, Any] = {"format": "full"}
+        else:
+            params = {"format": "metadata", "metadataHeaders": METADATA_HEADERS}
+        return self._http.get(self._u(f"messages/{message_id}"), params=params)
+
+    # Back-compat alias for callers that requested metadata explicitly.
+    get_message_metadata = get_message

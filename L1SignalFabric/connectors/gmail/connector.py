@@ -103,7 +103,7 @@ class GmailConnector(PollingConnector):
                 if not mid or mid in seen_ids:
                     continue
                 seen_ids.add(mid)
-                meta = self.client.get_message_metadata(mid)
+                meta = self.client.get_message(mid)
                 out.append(record_to_signal(message_metadata_to_record(meta),
                                             self._tenant_id, SourceSystem.GMAIL))
         if new_history_id:
@@ -146,7 +146,7 @@ class GmailConnector(PollingConnector):
         # watermark to the mailbox's current historyId.
         out: List[SignalEvent] = []
         for ref in self.client.list_messages(query="newer_than:7d"):
-            meta = self.client.get_message_metadata(ref.get("id", ""))
+            meta = self.client.get_message(ref.get("id", ""))
             out.append(record_to_signal(message_metadata_to_record(meta),
                                         self._tenant_id, SourceSystem.GMAIL))
             if limit and len(out) >= limit:

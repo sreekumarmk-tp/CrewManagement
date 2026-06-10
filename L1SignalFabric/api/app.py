@@ -27,10 +27,10 @@ from connectors.sharepoint import SharePointConnector
 from connectors.slack import SlackConnector
 from core.bus import EventBus, InMemoryBus
 from core.watermark import FileWatermarkStore
-from l2 import L2JsonlStore, OrgMap
+from l2 import L2JsonlStore, L2Router, OrgMap, project_record
 
 from . import live
-from .routes import graph_webhooks, gmail, health, slack
+from .routes import graph_records, graph_webhooks, gmail, health, slack
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("signalfabric.api.app")
@@ -57,20 +57,31 @@ def create_app(
     #     Either way "no change to any connector or route" (README seam). ---
     #     Each projected record is also upserted into the in-memory OrgMap graph
     #     (the real-graph counterpart to the JSONL store) for the OrgMap viewer.
+    #     The unified L2Router additionally fans each event's EntityMap + OpsMap
+    #     facets (project_record) into their in-memory maps, so one bus event
+    #     drives every map — exposed under /api/v1/graph/* alongside the wire
+    #     ingress POST /api/v1/graph/records.
     app.state.l2_store = None
     app.state.orgmap = None
+    app.state.l2_router = None
     if isinstance(bus_obj, (live.BroadcastBus, InMemoryBus)):
         store = L2JsonlStore(cfg.l2_store_path)
         orgmap = OrgMap()
+        router = L2Router(orgmap=orgmap)     # OrgMap stays the legacy path; +Entity/Ops
         app.state.l2_store = store
         app.state.orgmap = orgmap
+        app.state.l2_router = router
 
-        def _l2_sink(event, _store=store, _orgmap=orgmap):
+        def _l2_sink(event, _store=store, _orgmap=orgmap, _router=router):
             rec = _store.append(event)
             try:
                 _orgmap.upsert(rec)          # graph upsert is best-effort; never breaks the sink
             except Exception:
                 logger.exception("orgmap upsert failed")
+            try:                             # EntityMap + OpsMap facets (unified record)
+                _router.route_entity_ops(project_record(event))
+            except Exception:
+                logger.exception("l2 entity/ops routing failed")
             return rec
 
         if isinstance(bus_obj, live.BroadcastBus):
@@ -144,6 +155,7 @@ def create_app(
     app.include_router(slack.router)
     app.include_router(gmail.router)              # POST /gmail/push
     app.include_router(graph_webhooks.router)     # POST /outlook/webhook, /sharepoint/webhook
+    app.include_router(graph_records.router)       # POST /api/v1/graph/records (+ read views)
     app.include_router(live.router)   # GET / (dashboard), /stream (SSE), /demo/*
 
     return app
@@ -164,9 +176,9 @@ def _build_gmail_client(cfg: Settings):
             client_id=cfg.gmail_client_id,
             client_secret=cfg.gmail_client_secret,
             refresh_token=cfg.gmail_refresh_token,
-        ))
+        ), ingest_body=cfg.email_ingest_body)
     if cfg.gmail_access_token:
-        return GmailClient(cfg.gmail_access_token)
+        return GmailClient(cfg.gmail_access_token, ingest_body=cfg.email_ingest_body)
     return None
 
 
@@ -174,11 +186,13 @@ def _build_outlook_client(cfg: Settings):
     """Build an OutlookClient if Graph creds are present, else None (fixture mode)."""
     from connectors.common import GraphClient
     if cfg.outlook_access_token:
-        return OutlookClient(GraphClient(access_token=cfg.outlook_access_token))
+        return OutlookClient(GraphClient(access_token=cfg.outlook_access_token),
+                             ingest_body=cfg.email_ingest_body)
     if cfg.ms_tenant_id and cfg.ms_client_id and cfg.ms_client_secret:
         return OutlookClient(GraphClient(tenant_id=cfg.ms_tenant_id,
                                          client_id=cfg.ms_client_id,
-                                         client_secret=cfg.ms_client_secret))
+                                         client_secret=cfg.ms_client_secret),
+                             ingest_body=cfg.email_ingest_body)
     return None
 
 

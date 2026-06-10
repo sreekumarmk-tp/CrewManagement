@@ -8,7 +8,8 @@ This is a lightweight stand-in for the real L2 Operational Knowledge Graph
 canonical `SignalEvent` into an append-only **L2 JSONL store**:
 
   * SLACK message/reaction/join  → OrgMap edge (person ↔ channel)
-  * EMAIL (metadata)             → OrgMap edge (sender ↔ recipients)
+  * EMAIL                        → OrgMap edge (sender ↔ recipients); body lifted
+                                   into props when EMAIL_INGEST_BODY is on
   * EMAIL with l2Intent=sign-off → **SignOffEvent** node
   * ERP crew/contract/vessel     → entity node
 
@@ -189,6 +190,8 @@ class L2JsonlStore:
         if (event.metadata or {}).get("l2Intent") == "CREATE_SIGNOFF_EVENT":
             props = {"subject": d.get("subject"), "from": d.get("from"),
                      "thread_id": d.get("thread_id")}
+            if d.get("text"):
+                props["body"] = d["text"]
             if crew:
                 props.update(crew)
             return {**base, "id": f"signoff:{rid}", "kind": "signoff_event",
@@ -206,6 +209,8 @@ class L2JsonlStore:
         # e-mail family (EMAIL / GMAIL / OUTLOOK) → sender↔recipient edge
         if ss in {"EMAIL", "GMAIL", "OUTLOOK"}:
             props = {"from": d.get("from"), "to": d.get("to"), "subject": d.get("subject")}
+            if d.get("text"):
+                props["body"] = d["text"]
             if crew:
                 props.update(crew)
             return {**base, "id": f"edge:{rid}", "kind": "edge", "label": "EMAILED",
