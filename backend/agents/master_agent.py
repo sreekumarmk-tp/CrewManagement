@@ -65,11 +65,36 @@ class MasterAgent:
         })
 
         registry = SpecialistRegistry(PHASE1_KEYS, event_callback=self.event_callback)
+
+        # L4 #3 — feed the consulted precedent (stashed on the workflow at sign-off
+        # start) back into L3: derive re-rank guidance, inject it into the Crew
+        # Matching scorer, and surface it in the coordinator prompt. No precedent ⇒
+        # has_precedent=False ⇒ a no-op (scoring identical to a first-time vacancy).
+        # Imported lazily: services/__init__ pulls in workflow_service, which imports
+        # this module — a top-level import here would be circular.
+        from services.precedent_service import precedent_service
+        precedent = (workflow.memory.get("short_term") or {}).get("precedent")
+        guidance = precedent_service.derive_guidance(precedent)
+        cm_agent = registry.agents.get("crew_matching")
+        if cm_agent is not None and hasattr(cm_agent, "set_precedent_guidance"):
+            cm_agent.set_precedent_guidance(guidance)
+        if guidance.get("has_precedent"):
+            await self._emit("precedent_feedback_applied", {
+                "workflow_id": workflow.workflow_id,
+                "rationale": guidance.get("rationale"),
+            })
+
+        # L4 #3 (embeddings) — inject the structural-similarity context: the departing
+        # crew's embedding (like-for-like replacement) and the embeddings of prior
+        # signed-on crew for this profile (structurally resemble what worked before).
+        if cm_agent is not None and hasattr(cm_agent, "set_similarity_context"):
+            await self._inject_similarity_context(cm_agent, sign_off_crew, precedent)
+
         await self._emit_timeline(workflow, "Dispatching specialists: Crew Matching, Travel, Notification")
 
         turn = await self.client.run_turn(
             session_id=workflow.session_id,
-            message=self._phase1_prompt(sign_off_crew),
+            message=self._phase1_prompt(sign_off_crew, guidance),
             registry=registry,
             on_event=self._make_on_event(workflow),
         )
@@ -156,8 +181,27 @@ class MasterAgent:
 
     # ── Prompts ──────────────────────────────────────────────────────────────────
 
-    def _phase1_prompt(self, c: Dict[str, Any]) -> str:
+    def _phase1_prompt(self, c: Dict[str, Any], guidance: Optional[Dict[str, Any]] = None) -> str:
         today = datetime.utcnow().strftime("%Y-%m-%d")
+        # L4 #3 — when this vacancy profile has prior placements, tell the coordinator
+        # so crew_matching is aware it's a repeat (the rankCrew tool already applies a
+        # deterministic precedent boost; this is the qualitative, LLM-facing half).
+        precedent_block = ""
+        if guidance and guidance.get("has_precedent"):
+            prefer = ", ".join((guidance.get("prefer_nationalities") or {}).keys())
+            avoid = ", ".join((guidance.get("avoid_nationalities") or {}).keys())
+            lines = ["\nPRECEDENT (repeat vacancy — this profile has been filled before):"]
+            if guidance.get("rationale"):
+                lines.append(f"- {guidance['rationale']}")
+            if prefer:
+                lines.append(f"- Prefer candidates matching prior successful profile(s): {prefer}.")
+            if avoid:
+                lines.append(f"- Be cautious with profiles previously rejected here: {avoid}.")
+            lines.append(
+                "- The crew_matching rankCrew tool already applies a precedent boost; favor its top "
+                "ranked candidate."
+            )
+            precedent_block = "\n".join(lines) + "\n"
         return (
             "Sign-off request received. Process PHASE 1 for the departing crew member, then STOP "
             "(do not run a compliance check — wait for the user to confirm the sign-on).\n\n"
@@ -168,7 +212,8 @@ class MasterAgent:
             f"- Vessel: {c.get('vessel')}\n"
             f"- Port: {c.get('port')}\n"
             f"- Nationality: {c.get('nationality')}\n"
-            f"- Sign-off date: {today}\n\n"
+            f"- Sign-off date: {today}\n"
+            f"{precedent_block}\n"
             "Delegate IN PARALLEL:\n"
             "1. crew_matching — search, rank, and select the best available replacement candidate.\n"
             "2. travel — generate the flight ticket, port clearance, and travel summary for the departing crew.\n"
@@ -200,6 +245,28 @@ class MasterAgent:
             "final sign-on decision.\n\n"
             "Summarize the compliance verdict and stop."
         )
+
+    async def _inject_similarity_context(
+        self, cm_agent, sign_off_crew: Dict[str, Any], precedent: Optional[Dict[str, Any]]
+    ) -> None:
+        """Compute the departing crew's structural embedding and the embeddings of
+        prior signed-on crew for this profile, and hand them to the matching agent.
+        Best-effort; lazy imports avoid the services/__init__ import cycle."""
+        try:
+            from services.embedding_service import embed_crew
+            from database.embedding_repository import get_crew_embedding
+
+            departing = embed_crew(sign_off_crew or {})
+            precedents = []
+            for m in ((precedent or {}).get("matches") or []):
+                if m.get("outcome_status") == "signed_on" and m.get("chosen_crew_id"):
+                    emb = await get_crew_embedding(m["chosen_crew_id"])
+                    if emb:
+                        precedents.append(emb)
+            cm_agent.set_similarity_context(departing, precedents)
+            log.info("similarity_context.injected", precedents=len(precedents))
+        except Exception:
+            log.warning("similarity_context.inject_failed", exc_info=True)
 
     # ── Event relay + bookkeeping ──────────────────────────────────────────────────
 

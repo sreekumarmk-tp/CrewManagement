@@ -1,71 +1,97 @@
 "use client";
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect } from "react";
 import { useWorkflowStore } from "@/store/workflowStore";
 import type { WSEvent } from "@/types";
 
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8000";
 
-export function useWebSocket() {
-  const ws = useRef<WebSocket | null>(null);
-  const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const handleWSEvent = useWorkflowStore((s) => s.handleWSEvent);
-  const mounted = useRef(true);
+// ── App-wide singleton WebSocket ──────────────────────────────────────────────
+// Previously every page created its OWN socket on mount and closed it on unmount.
+// Switching tabs during a live workflow therefore tore the connection down and
+// reopened it mid-stream — dropping events (so the live decision never landed) and
+// churning the UI. Hoisting the socket to module scope means it's opened ONCE and
+// survives route changes; pages just attach to it.
+let socket: WebSocket | null = null;
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let pingTimer: ReturnType<typeof setInterval> | null = null;
+let connecting = false;
 
-  const connect = useCallback(() => {
-    if (!mounted.current) return;
-    try {
-      ws.current = new WebSocket(`${WS_URL}/ws`);
+function ensureSocket() {
+  if (
+    socket &&
+    (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)
+  ) {
+    return;
+  }
+  if (connecting) return;
+  connecting = true;
 
-      ws.current.onopen = () => {
-        console.log("[WS] Connected");
-      };
+  try {
+    const ws = new WebSocket(`${WS_URL}/ws`);
+    socket = ws;
 
-      ws.current.onmessage = (e) => {
-        try {
-          const msg = JSON.parse(e.data);
-          // Server sends {"type":"pong"} — skip it and any message without event_type
-          if (!msg.event_type || msg.type === "pong" || msg.event_type === "pong") return;
-          handleWSEvent(msg as WSEvent);
-        } catch {
-          // ignore parse errors
-        }
-      };
+    ws.onopen = () => {
+      connecting = false;
+      useWorkflowStore.getState().setWsConnected(true);
+    };
 
-      ws.current.onclose = () => {
-        if (mounted.current) {
-          reconnectTimer.current = setTimeout(connect, 3000);
-        }
-      };
-
-      ws.current.onerror = () => {
-        ws.current?.close();
-      };
-    } catch {
-      if (mounted.current) {
-        reconnectTimer.current = setTimeout(connect, 5000);
+    ws.onmessage = (e) => {
+      try {
+        const msg = JSON.parse(e.data);
+        // Server sends {"type":"pong"} — skip it and any message without event_type.
+        if (!msg.event_type || msg.type === "pong" || msg.event_type === "pong") return;
+        useWorkflowStore.getState().handleWSEvent(msg as WSEvent);
+      } catch {
+        // ignore parse errors
       }
+    };
+
+    ws.onclose = () => {
+      connecting = false;
+      socket = null;
+      useWorkflowStore.getState().setWsConnected(false);
+      if (!reconnectTimer) {
+        reconnectTimer = setTimeout(() => {
+          reconnectTimer = null;
+          ensureSocket();
+        }, 3000);
+      }
+    };
+
+    ws.onerror = () => {
+      ws.close();
+    };
+  } catch {
+    connecting = false;
+    if (!reconnectTimer) {
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        ensureSocket();
+      }, 5000);
     }
-  }, [handleWSEvent]);
+  }
+}
+
+function startPing() {
+  if (pingTimer) return;
+  pingTimer = setInterval(() => {
+    if (socket?.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: "ping" }));
+    }
+  }, 30000);
+}
+
+export function useWebSocket() {
+  // Reactive connection status from the store (updated by the singleton above).
+  const isConnected = useWorkflowStore((s) => s.wsConnected);
 
   useEffect(() => {
-    mounted.current = true;
-    connect();
+    ensureSocket();
+    startPing();
+    // Intentionally NO teardown on unmount: the socket is an app-wide singleton
+    // that must outlive any single page so a live workflow keeps streaming while
+    // the user navigates between tabs.
+  }, []);
 
-    const pingInterval = setInterval(() => {
-      if (ws.current?.readyState === WebSocket.OPEN) {
-        ws.current.send(JSON.stringify({ type: "ping" }));
-      }
-    }, 30000);
-
-    return () => {
-      mounted.current = false;
-      clearInterval(pingInterval);
-      if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
-      ws.current?.close();
-    };
-  }, [connect]);
-
-  return {
-    isConnected: ws.current?.readyState === WebSocket.OPEN,
-  };
+  return { isConnected };
 }
