@@ -8,6 +8,8 @@ venv/
 .erp_watermark.json
 # runtime artifacts
 data/l2_store.jsonl
+# connector watermarks/cursors (gmail.wm.json, db.wm.json) — per-tenant runtime state
+data/*.wm.json
 server.log
 .server.pid
 *.log
