@@ -88,6 +88,7 @@ class Settings:
     gmail_pubsub_token: str = os.getenv("GMAIL_PUBSUB_TOKEN", "")          # shared-secret push auth
     gmail_oidc_audience: str = os.getenv("GMAIL_OIDC_AUDIENCE", "")        # OIDC JWT audience
     gmail_dev_allow_unverified: bool = _flag("GMAIL_DEV_ALLOW_UNVERIFIED", True)
+    gmail_watermark_path: str = os.getenv("GMAIL_WATERMARK_PATH", "")      # "" => in-memory (lost on restart)
 
     # Outlook (Microsoft Graph mail webhook, metadata only)
     outlook_access_token: str = os.getenv("OUTLOOK_ACCESS_TOKEN", "")

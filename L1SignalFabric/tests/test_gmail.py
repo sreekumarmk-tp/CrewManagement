@@ -91,21 +91,62 @@ def test_ingest_envelope_with_inline_messages_and_dedup():
     assert asyncio.run(c.ingest(env)) == []
 
 
+def _fake_msg(mid, sender="a@x"):
+    return {"id": mid, "internalDate": "1717236000000", "labelIds": [],
+            "payload": {"headers": [{"name": "From", "value": sender},
+                                    {"name": "Subject", "value": "s"}]}}
+
+
 def test_history_expansion_with_client_advances_watermark():
+    """Warm path: with a baseline cursor, a push expands history *from the stored
+    cursor* (not the push's own id) and advances the watermark."""
     class FakeGmail:
         api_calls = 0
         rate_limit_hits = 0
+        seen_start = None
 
         def history_list(self, start):
+            FakeGmail.seen_start = start
             yield {"id": "100", "messagesAdded": [{"message": {"id": "m1"}}]}
 
         def get_message(self, mid):
-            return {"id": mid, "internalDate": "1717236000000", "labelIds": [],
-                    "payload": {"headers": [{"name": "From", "value": "a@x"},
-                                            {"name": "Subject", "value": "s"}]}}
+            return _fake_msg(mid)
 
     c = GmailConnector(tenant_id="t", client=FakeGmail())
+    c.commit("100")   # baseline established (e.g. from a prior push / watch)
     notif = {"historyId": "200"}
     sigs = asyncio.run(c.ingest(_envelope(notif, "px")))
     assert len(sigs) == 1 and sigs[0].data["from"] == "a@x"
+    # expansion started from the stored cursor, not the push's historyId
+    assert FakeGmail.seen_start == "100"
     assert c.position() == "200"
+
+
+def test_cold_start_push_backfills_recent_and_seeds_baseline():
+    """Cold start (no cursor): a push can't expand from its own historyId (that
+    returns nothing), so the connector backfills a recent window via messages.list
+    and commits the mailbox's current historyId as the baseline."""
+    class FakeGmail:
+        api_calls = 0
+        rate_limit_hits = 0
+        history_called = False
+
+        def history_list(self, start):
+            FakeGmail.history_called = True
+            yield from ()
+
+        def list_messages(self, query="", max_results=100):
+            assert "newer_than" in query
+            yield {"id": "m1"}
+
+        def get_message(self, mid):
+            return _fake_msg(mid)
+
+        def get_profile(self):
+            return {"historyId": "555"}
+
+    c = GmailConnector(tenant_id="t", client=FakeGmail())
+    sigs = asyncio.run(c.ingest(_envelope({"historyId": "200"}, "px")))
+    assert len(sigs) == 1 and sigs[0].data["from"] == "a@x"
+    assert FakeGmail.history_called is False       # took the backfill path, not history.list
+    assert c.position() == "555"                   # baseline seeded from profile historyId

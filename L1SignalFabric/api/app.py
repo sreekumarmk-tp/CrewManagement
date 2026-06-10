@@ -113,12 +113,14 @@ def create_app(
     )
 
     gmail_client = _build_gmail_client(cfg)
+    gmail_wm = FileWatermarkStore(cfg.gmail_watermark_path) if cfg.gmail_watermark_path else None
     app.state.gmail = GmailConnector(
         tenant_id=cfg.tenant_id,
         client=gmail_client,
         pubsub_token=cfg.gmail_pubsub_token,
         oidc_audience=cfg.gmail_oidc_audience,
         dev_allow_unverified=cfg.gmail_dev_allow_unverified,
+        watermarks=gmail_wm,   # persist historyId so pushes resume across restarts
     )
 
     outlook_client = _build_outlook_client(cfg)

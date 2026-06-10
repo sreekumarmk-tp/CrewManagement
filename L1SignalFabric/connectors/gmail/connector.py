@@ -91,13 +91,22 @@ class GmailConnector(PollingConnector):
         return decoded
 
     def _expand_history(self, new_history_id: str) -> List[SignalEvent]:
-        """With a live client, fetch metadata for messages added since watermark."""
+        """With a live client, fetch metadata for messages added since watermark.
+
+        Cold start (no stored cursor) can't use ``new_history_id`` as the start:
+        ``history.list`` returns only changes *after* that id, and the message
+        that triggered this push sits *at* it — so the expansion would come back
+        empty and the first e-mail after a (re)start would be silently dropped.
+        Instead we backfill a recent window once to establish the baseline; from
+        then on the persisted cursor drives normal incremental expansion.
+        """
         if self.client is None:
             return []
-        start = self._cursor or new_history_id
+        if not self._cursor:
+            return self._cold_start_backfill()
         out: List[SignalEvent] = []
         seen_ids: set[str] = set()
-        for record in self.client.history_list(start):
+        for record in self.client.history_list(self._cursor):
             for added in record.get("messagesAdded", []):
                 mid = (added.get("message") or {}).get("id")
                 if not mid or mid in seen_ids:
@@ -108,6 +117,36 @@ class GmailConnector(PollingConnector):
                                             self._tenant_id, SourceSystem.GMAIL))
         if new_history_id:
             self.commit(str(new_history_id))
+        return out
+
+    def _cold_start_backfill(self, query: str = "newer_than:1d",
+                             limit: Optional[int] = 50) -> List[SignalEvent]:
+        """Enumerate a recent window once when no watermark exists, then commit the
+        mailbox's current ``historyId`` as the baseline for incremental expansion.
+
+        Bus dedup (``dedup_id`` per message) makes a re-enumerated message a no-op,
+        so an overlap with a later push is harmless. The window is deliberately
+        tight (last day) so a fresh start surfaces the just-arrived e-mail without
+        replaying the whole mailbox."""
+        if self.client is None:
+            return []
+        out: List[SignalEvent] = []
+        seen_ids: set[str] = set()
+        for ref in self.client.list_messages(query=query):
+            mid = ref.get("id", "")
+            if not mid or mid in seen_ids:
+                continue
+            seen_ids.add(mid)
+            meta = self.client.get_message(mid)
+            out.append(record_to_signal(message_metadata_to_record(meta),
+                                        self._tenant_id, SourceSystem.GMAIL))
+            if limit and len(out) >= limit:
+                break
+        hid = self.client.get_profile().get("historyId", "")
+        if hid:
+            self.commit(str(hid))
+        logger.info("gmail cold-start backfill: %d message(s) over %s; baseline historyId=%s",
+                    len(out), query, hid or "?")
         return out
 
     # ---- ingest (push) ----
@@ -142,16 +181,6 @@ class GmailConnector(PollingConnector):
             return []
         if self._cursor:
             return self._expand_history(self.client.get_profile().get("historyId", ""))
-        # cold start: enumerate a window via messages.list, then advance the
-        # watermark to the mailbox's current historyId.
-        out: List[SignalEvent] = []
-        for ref in self.client.list_messages(query="newer_than:7d"):
-            meta = self.client.get_message(ref.get("id", ""))
-            out.append(record_to_signal(message_metadata_to_record(meta),
-                                        self._tenant_id, SourceSystem.GMAIL))
-            if limit and len(out) >= limit:
-                break
-        hid = self.client.get_profile().get("historyId", "")
-        if hid:
-            self.commit(str(hid))
-        return out
+        # cold start: enumerate a window (wider for an explicit pull), then advance
+        # the watermark to the mailbox's current historyId.
+        return self._cold_start_backfill(query="newer_than:7d", limit=limit)
