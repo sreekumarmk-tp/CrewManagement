@@ -1,6 +1,6 @@
 """Slack Web-API backfill connector — the streaming realization of the scraper.
 
-The Conduit Slack *scraper* pulled channel history + threads in a batch and wrote
+The upstream Slack *scraper* pulled channel history + threads in a batch and wrote
 JSONL. This brings that whole capability into L1 as a watermark-checkpointed
 **pull** connector:
 
@@ -9,7 +9,7 @@ JSONL. This brings that whole capability into L1 as a watermark-checkpointed
     canonical SignalEvents; advance the watermark to the newest ``ts`` seen so a
     restart resumes losslessly.
   * ``scrape()`` — the full batch path (channel resolution → history → threads),
-    used by the CLI to (re)produce Conduit ``slack.jsonl`` + manifest + metrics,
+    used by the CLI to (re)produce the ``slack.jsonl`` + manifest + metrics bundle,
     and optionally to publish every event to the bus.
 
 Channel resolution, bot filtering, thread-reply fetching, user-email resolution
@@ -160,7 +160,7 @@ class SlackBackfillConnector(PollingConnector):
             self.logger.info("slack poll", emitted=len(out), cursor=self._cursor)
         return out
 
-    # ---- full batch scrape (CLI / Conduit-compatible output) ----
+    # ---- full batch scrape (CLI / batch-compatible output) ----
     def scrape(
         self,
         writer: Optional[OutputWriter] = None,

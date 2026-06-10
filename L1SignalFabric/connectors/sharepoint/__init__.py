@@ -1,14 +1,12 @@
-"""SharePoint connector — Microsoft Graph drives & lists (delta pull + webhook)."""
+"""SharePoint connector — Microsoft Graph (app-only folder listing, metadata only)."""
 
-from .client import SharePointClient
-from .connector import DriveTarget, ListTarget, SharePointConnector
-from .mappers import drive_item_to_signal, list_item_to_signal
+from .client import SharePointClient, SharePointClientError
+from .connector import SharePointConnector
+from .mappers import folder_item_to_signal
 
 __all__ = [
     "SharePointConnector",
     "SharePointClient",
-    "DriveTarget",
-    "ListTarget",
-    "drive_item_to_signal",
-    "list_item_to_signal",
+    "SharePointClientError",
+    "folder_item_to_signal",
 ]

@@ -94,7 +94,7 @@ def list_pages(token, token_secret_arn, config_path, filter_type) -> None:
 @click.option("--output-dir", default="./output")
 def scrape(token, token_secret_arn, config_path, tenant_id, since, rate_limit_delay,
            output_dir) -> None:
-    """Backfill pages + database items to a Conduit-compatible JSONL bundle."""
+    """Backfill pages + database items to a batch-compatible JSONL bundle."""
     cfg = _load_yaml(config_path)
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     logger = StructuredLogger(Path(output_dir) / "scrape.log", console_output=True)

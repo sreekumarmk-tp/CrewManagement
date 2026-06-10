@@ -1,6 +1,6 @@
 """Parse Notion blocks and extract plain text content.
 
-Ported verbatim (behaviour-for-behaviour) from the Conduit Notion scraper's
+Ported verbatim (behaviour-for-behaviour) from the upstream Notion scraper's
 ``block_parser.py`` so the L1 connector captures exactly the same flattened page
 content and database-property text. Handles 25+ block types, recursive nested
 blocks (max depth 10), rich-text flattening, and the full database property-type

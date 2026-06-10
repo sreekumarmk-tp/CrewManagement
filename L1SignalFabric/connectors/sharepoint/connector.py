@@ -1,54 +1,37 @@
-"""SharePoint connector — Graph delta pull + webhook push.
+"""SharePoint connector — Graph app-only folder listing, metadata only.
 
-Configured with one or more *targets* — document-library drives and/or
-SharePoint lists. Each target keeps its own ``@odata.deltaLink`` watermark, so
-:meth:`poll` only emits items changed since the last run (incremental, resumable
-across restarts). A Graph webhook (``POST /sharepoint/webhook``) notifies that a
-target changed; :meth:`verify` handles the handshake/clientState and the route
-re-polls the affected target.
+Instead of a per-drive/list ``delta`` watermark + webhook push, the connector
+**lists the configured folder(s)** under one site's default document library and
+emits a ``drive_item`` event per file/folder. Re-listing is idempotent — an
+in-process ``seen`` set suppresses items already emitted this run, and a restart
+simply re-lists the current folder contents.
 
-Because each target has an independent watermark, this connector manages a
-:class:`~core.watermark.WatermarkStore` directly rather than the single-cursor
-base; :meth:`position` / :meth:`commit` expose the full per-target snapshot.
+  * **pull** — :meth:`poll` lists each configured folder and emits new items.
+  * **push** — a Graph change notification on ``POST /sharepoint/webhook`` kicks
+    a poll; :meth:`verify` handles the ``validationToken`` handshake + clientState.
+
+In dev/replay mode (no client) the connector accepts an inline normalised folder
+item, so the fixture demo runs without Azure.
 """
 
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, List, Optional
 
 from connectors.common.msgraph_webhook import verify_graph_webhook
-from core.connector import Checkpoint, EventStreamConnector, InboundRequest, VerifyResult
+from connectors.common.poller import PollingConnector
+from core.connector import InboundRequest, VerifyResult
 from core.signal import SignalEvent, SourceSystem
-from core.watermark import InMemoryWatermarkStore, WatermarkStore
+from core.watermark import WatermarkStore
 
-from .client import SharePointClient
-from .mappers import drive_item_to_signal, list_item_to_signal
+from .client import SharePointClient, SharePointClientError
+from .mappers import folder_item_to_signal
 
 logger = logging.getLogger("signalfabric.connector.sharepoint")
 
 
-@dataclass
-class DriveTarget:
-    drive_id: str
-
-    @property
-    def wm_key(self) -> str:
-        return f"sharepoint:drive:{self.drive_id}"
-
-
-@dataclass
-class ListTarget:
-    site_id: str
-    list_id: str
-
-    @property
-    def wm_key(self) -> str:
-        return f"sharepoint:list:{self.site_id}:{self.list_id}"
-
-
-class SharePointConnector(EventStreamConnector):
+class SharePointConnector(PollingConnector):
     name = "sharepoint"
     source_system = SourceSystem.SHAREPOINT
 
@@ -57,72 +40,59 @@ class SharePointConnector(EventStreamConnector):
         *,
         tenant_id: str,
         client: Optional[SharePointClient] = None,
-        targets: Optional[List[Any]] = None,
+        folder_paths: Optional[List[str]] = None,
         client_state: str = "",
         dev_allow_unverified: bool = True,
         watermarks: Optional[WatermarkStore] = None,
     ) -> None:
-        self._tenant_id = tenant_id
+        super().__init__(tenant_id=tenant_id, start_cursor="", watermarks=watermarks)
         self.client = client
-        self.targets: List[Any] = targets or []
+        self.folder_paths: List[str] = [f for f in (folder_paths or []) if f]
         self._client_state = client_state
         self._dev_allow_unverified = dev_allow_unverified
-        self._wm = watermarks or InMemoryWatermarkStore()
+        self._seen: set[str] = set()
 
     # ---- push: verify ----
     def verify(self, request: InboundRequest) -> VerifyResult:
         return verify_graph_webhook(request, client_state=self._client_state,
                                     dev_allow_unverified=self._dev_allow_unverified)
 
-    # ---- watermark snapshot (per target) ----
-    def position(self) -> Checkpoint:
-        return {t.wm_key: self._wm.get(t.wm_key, "") for t in self.targets}
-
-    def commit(self, checkpoint: Checkpoint) -> None:
-        for key, link in (checkpoint or {}).items():
-            self._wm.set(key, link)
-
     # ---- ingest (fixture/replay + webhook) ----
     async def ingest(self, raw: dict[str, Any]) -> list[SignalEvent]:
-        # a single list item (has fields) or drive item (has name/file/folder)
-        if "fields" in raw and "name" not in raw:
-            return [list_item_to_signal(raw, self._tenant_id)]
-        if "name" in raw or "file" in raw or "folder" in raw:
-            return [drive_item_to_signal(raw, self._tenant_id)]
-        # a Graph webhook body → trigger a delta poll of all targets
+        # a single normalised folder item (fixture/replay)
+        if "id" in raw and "name" in raw and ("is_folder" in raw or "web_url" in raw):
+            return [self._to_signal(raw)]
+        # a Graph webhook body → trigger a folder poll
         if "value" in raw and self.client is not None:
             return await self.poll()
         return []
 
-    # ---- pull (delta over every target) ----
+    def _to_signal(self, item: dict[str, Any], folder_path: str = "") -> SignalEvent:
+        hostname = getattr(self.client, "hostname", "") if self.client else ""
+        site_path = getattr(self.client, "site_path", "") if self.client else ""
+        return folder_item_to_signal(item, self._tenant_id, hostname=hostname,
+                                     site_path=site_path, folder_path=folder_path)
+
+    # ---- pull (list configured folders) ----
     async def poll(self, limit: Optional[int] = None) -> List[SignalEvent]:
         if self.client is None:
             return []
         out: List[SignalEvent] = []
-        new_links: Dict[str, str] = {}
-        for target in self.targets:
-            start = self._wm.get(target.wm_key, "") or None
+        for folder in self.folder_paths:
             try:
-                if isinstance(target, DriveTarget):
-                    items, link = self.client.drive_delta(target.drive_id, start=start)
-                    for it in items:
-                        if "root" in it:  # the drive-root anchor (facet may be {}) — not a real item
-                            continue
-                        out.append(drive_item_to_signal(it, self._tenant_id, target.drive_id))
-                else:
-                    items, link = self.client.list_delta(target.site_id, target.list_id, start=start)
-                    for it in items:
-                        out.append(list_item_to_signal(it, self._tenant_id,
-                                                       target.site_id, target.list_id))
-                if link:
-                    new_links[target.wm_key] = link
-            except Exception as exc:  # noqa: BLE001 - one bad target must not abort others
-                logger.warning("sharepoint target poll failed (%s): %s", target.wm_key, exc)
-            if limit and len(out) >= limit:
-                break
-        if new_links:
-            self.commit(new_links)
+                items = self.client.list_folder(folder)
+            except SharePointClientError as exc:  # one bad folder must not abort others
+                logger.warning("sharepoint folder poll failed (%s): %s", folder, exc)
+                continue
+            for it in items:
+                iid = it.get("id")
+                if not iid or iid in self._seen:
+                    continue
+                self._seen.add(iid)
+                out.append(self._to_signal(it, folder_path=folder))
+                if limit and len(out) >= limit:
+                    return out
         if out:
-            logger.info("sharepoint poll: %d items across %d targets",
-                        len(out), len(self.targets))
+            logger.info("sharepoint poll: %d items across %d folder(s)",
+                        len(out), len(self.folder_paths))
         return out

@@ -1,6 +1,6 @@
 """Slack Web API client — the real backfill/enrichment client.
 
-Ports the Conduit Slack scraper's ``client.py`` onto the shared
+Ports the upstream Slack scraper's ``client.py`` onto the shared
 :class:`~connectors.common.http.RateLimitedClient`. Same endpoints, same
 pagination, same rate-limit/retry semantics (default 1200 ms pacing ≈ 50 req/min,
 fail after 2 consecutive 429s), implemented directly over the Slack HTTPS API so

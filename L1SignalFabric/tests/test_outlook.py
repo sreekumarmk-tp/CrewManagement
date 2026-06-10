@@ -1,4 +1,4 @@
-"""Outlook connector: Graph mail mapping, webhook verify, delta poll."""
+"""Outlook connector: Graph mail mapping, webhook verify, unread poll + mark-read."""
 
 import asyncio
 
@@ -15,6 +15,20 @@ def _graph_msg(mid="m1", subject="Hello", categories=None):
             "ccRecipients": [{"emailAddress": {"address": "c@z"}}],
             "subject": subject, "categories": categories or [],
             "receivedDateTime": "2024-06-01T10:00:00Z"}
+
+
+class FakeOutlook:
+    """Minimal stand-in for OutlookClient — unread list + mark-read."""
+
+    def __init__(self, unread):
+        self.unread = list(unread)   # newest-first, like Graph $orderby desc
+        self.marked: list[str] = []
+
+    def list_unread(self, top=50):
+        return [m for m in self.unread if m["id"] not in self.marked][:top]
+
+    def mark_read(self, mid):
+        self.marked.append(mid)
 
 
 def test_graph_message_to_record():
@@ -43,28 +57,34 @@ def test_verify_handshake_and_client_state():
     assert bad.outcome.value == "reject"
 
 
-def test_ingest_notification_with_inline_message():
+def test_ingest_graph_message_resource():
     c = OutlookConnector(tenant_id="t")
-    body = {"value": [{"subscriptionId": "s1", "resourceData": {"id": "m1"},
-                       "_message": _graph_msg()}]}
+    sigs = asyncio.run(c.ingest(_graph_msg()))
+    assert len(sigs) == 1 and sigs[0].key == {"message_id": "<m1>"}
+
+
+def test_ingest_notification_triggers_poll():
+    # A Graph change-notification with a live client kicks an unread poll.
+    c = OutlookConnector(tenant_id="t", client=FakeOutlook([_graph_msg("m1")]))
+    body = {"value": [{"subscriptionId": "s1", "resourceData": {"id": "m1"}}]}
     sigs = asyncio.run(c.ingest(body))
     assert len(sigs) == 1 and sigs[0].key == {"message_id": "<m1>"}
-    # duplicate resourceData id dropped
-    assert asyncio.run(c.ingest(body)) == []
 
 
-def test_delta_poll_advances_watermark():
-    class FakeOutlook:
-        api_calls = 0
-        rate_limit_hits = 0
-
-        def delta(self, folder="inbox", start=None, select=""):
-            if start:
-                return [], "link2"
-            return [_graph_msg("m1"), {"id": "m2", "@removed": {"reason": "deleted"}}], "link2"
-
-    c = OutlookConnector(tenant_id="t", client=FakeOutlook())
+def test_unread_poll_marks_read_and_dedupes():
+    fake = FakeOutlook([_graph_msg("m2"), _graph_msg("m1")])  # newest-first
+    c = OutlookConnector(tenant_id="t", client=fake)
     sigs = asyncio.run(c.poll())
-    assert len(sigs) == 1                  # removed item skipped
-    assert c.position() == "link2"
-    assert asyncio.run(c.poll()) == []     # delta link returns nothing new
+    assert len(sigs) == 2
+    # processed oldest-first so emission order matches arrival order
+    assert [s.key["message_id"] for s in sigs] == ["<m1>", "<m2>"]
+    assert fake.marked == ["m1", "m2"]          # both marked read
+    assert asyncio.run(c.poll()) == []          # nothing unread left
+
+
+def test_poll_without_mark_read_still_dedupes_in_process():
+    fake = FakeOutlook([_graph_msg("m1")])
+    c = OutlookConnector(tenant_id="t", client=fake, mark_read=False)
+    assert len(asyncio.run(c.poll())) == 1
+    assert fake.marked == []                    # left unread on the server
+    assert asyncio.run(c.poll()) == []          # but the seen-set suppresses re-emit

@@ -23,3 +23,5 @@ pytest-of-*/            # pytest tmp_path scratch dirs (regenerated each run)
 # editor lock files (e.g. LibreOffice on the .docx)
 .~lock.*#
 .DS_Store
+# local reference bundle (separate demo, not part of this repo)
+docs/f2c/

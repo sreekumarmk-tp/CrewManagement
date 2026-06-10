@@ -1,7 +1,8 @@
 """L1 SignalFabric core contracts (shared, agreed Day 1).
 
 Connectors (ingress track) and the bus/sink (core track) both build against
-these types. Keep this layer dependency-light and wire-compatible with Conduit.
+these types. Keep this layer dependency-light and wire-compatible with the
+upstream batch pipeline.
 """
 
 from .bus import EventBus, InMemoryBus, LoggingEventBus

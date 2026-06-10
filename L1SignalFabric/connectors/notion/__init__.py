@@ -1,6 +1,6 @@
 """Notion connector — pull over pages, databases and blocks.
 
-The L1 realization of the Conduit Notion scraper: real API client, full block
+The L1 realization of the upstream Notion scraper: real API client, full block
 parser (25+ block types, recursive), database-property extraction, and a
 watermark-checkpointed :class:`NotionConnector` emitting canonical SignalEvents.
 """

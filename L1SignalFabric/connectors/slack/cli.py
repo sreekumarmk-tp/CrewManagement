@@ -1,6 +1,6 @@
 """Slack connector CLI — ``test`` / ``list-channels`` / ``scrape``.
 
-Parity with the Conduit Slack scraper's CLI, but the ``scrape`` output is the
+Parity with the upstream Slack scraper's CLI, but the ``scrape`` output is the
 canonical SignalEvent stream (``slack.jsonl`` + ``manifest.json`` + ``metrics.json``)
 so a backfill is wire-identical to the live bus.
 
@@ -108,7 +108,7 @@ def list_channels(token, token_secret_arn, config_path, show_all) -> None:
 def scrape(token, token_secret_arn, config_path, tenant_id, channels, since, until,
            exclude_thread_replies, exclude_bots, max_replies, rate_limit_delay,
            output_dir) -> None:
-    """Backfill channel history (+threads) to a Conduit-compatible JSONL bundle."""
+    """Backfill channel history (+threads) to a batch-compatible JSONL bundle."""
     cfg = _load_yaml(config_path)
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     logger = StructuredLogger(Path(output_dir) / "scrape.log", console_output=True)

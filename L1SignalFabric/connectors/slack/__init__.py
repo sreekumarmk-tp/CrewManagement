@@ -3,7 +3,7 @@
 * :class:`SlackConnector` — the live push connector mounted at ``/slack/events``
   (signature verify + event normalization), wired into the FastAPI app.
 * :class:`SlackBackfillConnector` — the Web-API pull connector (the realization
-  of the Conduit Slack scraper): channel history + threads + user/reaction
+  of the upstream Slack scraper): channel history + threads + user/reaction
   resolution, watermark-checkpointed, emitting the same canonical events.
 """
 

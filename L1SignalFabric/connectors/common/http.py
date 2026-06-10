@@ -1,7 +1,7 @@
 """Rate-limited, retrying HTTP client — the shared spine of every real connector.
 
 This generalises the ``_delay`` / ``_handle_rate_limit`` / ``_call_api`` triad
-that the Conduit Slack and Notion scrapers each hand-rolled into one reusable
+that the upstream Slack and Notion scrapers each hand-rolled into one reusable
 client, so Slack, Notion, Gmail, Outlook and SharePoint all get identical,
 battle-tested throttling and retry behaviour:
 

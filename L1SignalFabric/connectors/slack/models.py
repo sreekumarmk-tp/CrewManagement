@@ -1,4 +1,4 @@
-"""Slack domain models — ported from the Conduit Slack scraper.
+"""Slack domain models — ported from the upstream Slack scraper.
 
 These mirror the scraper's ``models.py`` field-for-field so the backfill path
 captures exactly what the batch scraper did (users with resolved e-mail,

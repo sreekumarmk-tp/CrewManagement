@@ -1,6 +1,6 @@
 """Structured JSON logger — shared by every real connector.
 
-Ported from the Conduit Slack/Notion scrapers' ``logger.py`` (identical
+Ported from the upstream Slack/Notion scrapers' ``logger.py`` (identical
 behaviour, one copy). Writes one JSON object per line to an optional log file and
 prints a coloured, human-readable line to stderr. Connectors use this for their
 backfill/scrape mode (``cli.py``); the live FastAPI path keeps using the stdlib

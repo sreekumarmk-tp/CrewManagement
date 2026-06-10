@@ -90,20 +90,35 @@ class Settings:
     gmail_dev_allow_unverified: bool = _flag("GMAIL_DEV_ALLOW_UNVERIFIED", True)
     gmail_watermark_path: str = os.getenv("GMAIL_WATERMARK_PATH", "")      # "" => in-memory (lost on restart)
 
-    # Outlook (Microsoft Graph mail webhook, metadata only)
-    outlook_access_token: str = os.getenv("OUTLOOK_ACCESS_TOKEN", "")
+    # Outlook (Microsoft Graph mail — app-only unread poll, metadata only).
+    # Mailbox UPN is required for app-only (there is no signed-in /me).
+    outlook_mailbox_upn: str = os.getenv("OUTLOOK_MAILBOX_UPN", "")
+    outlook_mark_as_read: bool = _flag("OUTLOOK_MARK_AS_READ", True)
     outlook_client_state: str = os.getenv("OUTLOOK_CLIENT_STATE", "")
     outlook_dev_allow_unverified: bool = _flag("OUTLOOK_DEV_ALLOW_UNVERIFIED", True)
 
-    # SharePoint (Microsoft Graph drives/lists webhook)
-    sharepoint_access_token: str = os.getenv("SHAREPOINT_ACCESS_TOKEN", "")
+    # SharePoint (Microsoft Graph — app-only folder listing, metadata only).
+    # One site (hostname + server-relative path) and one-or-more comma/newline
+    # separated folder paths under its default document library.
+    sharepoint_hostname: str = os.getenv("SHAREPOINT_HOSTNAME", "")
+    sharepoint_site_path: str = os.getenv("SHAREPOINT_SITE_PATH", "")
+    sharepoint_folder_path: str = os.getenv("SHAREPOINT_FOLDER_PATH", "")
     sharepoint_client_state: str = os.getenv("SHAREPOINT_CLIENT_STATE", "")
     sharepoint_dev_allow_unverified: bool = _flag("SHAREPOINT_DEV_ALLOW_UNVERIFIED", True)
 
-    # Microsoft 365 app credentials (shared by Outlook + SharePoint client-credentials grant)
+    # Microsoft 365 app credentials (shared by Outlook + SharePoint app-only grant)
     ms_tenant_id: str = os.getenv("MS_TENANT_ID", "")
     ms_client_id: str = os.getenv("MS_CLIENT_ID", "")
     ms_client_secret: str = os.getenv("MS_CLIENT_SECRET", "")
+    # Public HTTPS base (e.g. an ngrok tunnel) Graph pushes change notifications to.
+    # The `subscribe` CLIs append /outlook/webhook and /sharepoint/webhook.
+    ms_webhook_base_url: str = os.getenv("MS_WEBHOOK_BASE_URL", "")
+
+    @property
+    def sharepoint_folder_paths(self) -> list:
+        """Configured folder paths, split on comma/newline (empty => none)."""
+        raw = self.sharepoint_folder_path.replace("\n", ",")
+        return [p.strip() for p in raw.split(",") if p.strip()]
 
     # Database (generic SQL CDC/outbox); "" => in-memory mimic adapter
     database_url: str = os.getenv("DATABASE_URL", "")

@@ -78,7 +78,7 @@ checkout reproduces results.
 - **Loss/dup:** compare source-side ids vs sink-side canonical `key`+`sourceSequence` sets;
   `missing = source − sink`, `dup = sink_count − distinct(sink)`.
 - **Streaming proof:** assert `operation == "DELTA"` and arrival via push/poll (no manifest
-  file consumed) — distinguishes from Conduit's batch `SNAPSHOT` path.
+  file consumed) — distinguishes from the upstream batch `SNAPSHOT` path.
 
 ---
 

@@ -1,15 +1,15 @@
 """Canonical event model for L1 SignalFabric.
 
 `SignalEvent` is the one shape every connector emits and the event bus / L2 sink
-consume. It is 1:1 with the upstream Conduit `Record` (entity, key, sourceSystem,
+consume. It is 1:1 with the upstream `Record` (entity, key, sourceSystem,
 tenantId, data, operation, timestamp, lineage) so the stream stays
-Conduit-compatible — the only difference from Conduit's file path is that L1 is
-continuous, so `operation` is always ``DELTA`` (never ``SNAPSHOT``).
+batch-compatible — the only difference from the upstream batch file path is that
+L1 is continuous, so `operation` is always ``DELTA`` (never ``SNAPSHOT``).
 
 This module is the **jointly-agreed Day-1 contract** (see PLAN §3 "Shared/agreed
 Day 1"): both the ingress/connector track and the bus/sink track build against it.
 It is intentionally dependency-light (pydantic only) so it can later be vendored
-back into Conduit unchanged.
+back upstream unchanged.
 """
 
 from __future__ import annotations
@@ -30,22 +30,22 @@ def utcnow() -> datetime:
 class SourceSystem(str, Enum):
     """Source systems L1 SignalFabric ingests from.
 
-    SLACK / EMAIL already exist in the upstream Conduit enum; the ERP members
+    SLACK / EMAIL already exist in the upstream enum; the ERP members
     (Crew DB, Contract/CLM, Vessel/Port DB) and the real-connector members
     (Notion, Gmail, Outlook, SharePoint, generic Database) are the L1 extension.
 
     ``GMAIL`` / ``OUTLOOK`` are concrete e-mail providers; both belong to the
     "e-mail family" (see :data:`EMAIL_FAMILY`) that the L2 sink treats uniformly
     for OrgMap edges and SignOffEvent materialization. ``EMAIL`` is retained for
-    the provider-agnostic demo normalizer and for upstream-Conduit compatibility.
+    the provider-agnostic demo normalizer and for upstream compatibility.
     """
 
     SLACK = "SLACK"                      # Slack Events API + Web API backfill
     EMAIL = "EMAIL"                      # provider-agnostic e-mail metadata (demo)
     GMAIL = "GMAIL"                      # Gmail API (Pub/Sub push + history backfill)
-    OUTLOOK = "OUTLOOK"                  # Microsoft Graph mail (webhook + delta)
+    OUTLOOK = "OUTLOOK"                  # Microsoft Graph mail (app-only unread poll)
     NOTION = "NOTION"                    # Notion API (pages / databases / blocks)
-    SHAREPOINT = "SHAREPOINT"            # Microsoft Graph (sites / drives / lists)
+    SHAREPOINT = "SHAREPOINT"            # Microsoft Graph (app-only folder listing)
     DATABASE = "DATABASE"                # generic SQL CDC / outbox feed
     CREW_DB = "CREW_DB"                  # ERP — crew master
     CONTRACT_CLM = "CONTRACT_CLM"        # ERP — contract lifecycle mgmt
@@ -59,7 +59,7 @@ EMAIL_FAMILY = frozenset({SourceSystem.EMAIL, SourceSystem.GMAIL, SourceSystem.O
 
 class Operation(str, Enum):
     """How downstream should interpret the record. L1 streams are always DELTA;
-    SNAPSHOT exists only for parity with Conduit's batch file path."""
+    SNAPSHOT exists only for parity with the upstream batch file path."""
 
     DELTA = "DELTA"
     SNAPSHOT = "SNAPSHOT"

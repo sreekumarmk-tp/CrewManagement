@@ -1,10 +1,10 @@
-"""Conduit-compatible output writer (JSONL + manifest.json + metrics.json).
+"""Batch-compatible output writer (JSONL + manifest.json + metrics.json).
 
 Unifies the Slack and Notion scrapers' ``writer.py``. A connector's *backfill*
 mode (``cli.py scrape``) writes the canonical :class:`~core.signal.SignalEvent`
 stream to ``<source>.jsonl`` plus a v2.0 ``manifest.json`` and a ``metrics.json``,
-so a backfill produces the exact artifacts the upstream Conduit file path expects
-— the L1 stream and the Conduit batch stay wire-compatible.
+so a backfill produces the exact artifacts the upstream batch file path expects
+— the L1 stream and the upstream batch stay wire-compatible.
 
 Unlike the scrapers (which wrote their bespoke per-source row shape), this writes
 the normalized SignalEvent dict, so backfill output is identical to what flows

@@ -1,4 +1,4 @@
-"""Notion domain models — ported from the Conduit Notion scraper."""
+"""Notion domain models — ported from the upstream Notion scraper."""
 
 from __future__ import annotations
 

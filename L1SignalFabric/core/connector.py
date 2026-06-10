@@ -1,6 +1,6 @@
 """The connector contract — `EventStreamConnector`.
 
-This is the L1 realization of Conduit's stubbed Phase-3 ``CDCExtractor``. Every
+This is the L1 realization of the upstream stubbed Phase-3 ``CDCExtractor``. Every
 source (Slack, Gmail, ERP) implements the same lifecycle so the core treats them
 uniformly, whether the source *pushes* (webhook) or is *pulled* (CDC/outbox):
 

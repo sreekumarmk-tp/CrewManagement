@@ -1,6 +1,6 @@
 """Notion API client — the real pages/databases/blocks client.
 
-Ports the Conduit Notion scraper's ``client.py`` onto the shared
+Ports the upstream Notion scraper's ``client.py`` onto the shared
 :class:`~connectors.common.http.RateLimitedClient`, talking directly to the
 Notion HTTPS API (no ``notion-client`` dependency). Same endpoints, same 350 ms
 pacing (~3 req/s, Notion's limit), same fail-after-3-consecutive-429s guard,

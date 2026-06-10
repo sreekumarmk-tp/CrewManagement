@@ -56,7 +56,7 @@ def test(url, table) -> None:
 @click.option("--limit", default=None, type=int)
 def poll(url, mode, table, entity, key_col, updated_col, tenant_id, watermark_path,
          output_dir, limit) -> None:
-    """Poll changes since the watermark and write a Conduit-compatible bundle."""
+    """Poll changes since the watermark and write a batch-compatible bundle."""
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     logger = StructuredLogger(Path(output_dir) / "scrape.log", console_output=True)
     if mode == "outbox":

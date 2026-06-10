@@ -146,7 +146,7 @@ and mappers are unchanged.
 
 **Role & Responsibility.** The uniform lifecycle every source implements, so the core
 treats push (webhook) and pull (CDC/outbox) connectors identically. It is the L1
-realization of Conduit's stubbed Phase-3 `CDCExtractor`. Defines the four lifecycle
+realization of the upstream stubbed Phase-3 `CDCExtractor`. Defines the four lifecycle
 methods and the framework-agnostic request/result value types so connectors never depend
 on the web framework.
 
@@ -434,8 +434,8 @@ covered above from a different angle; this part is the canonical six-block refer
 ## 4.1 SignalEvent schema
 
 **Role & Responsibility.** The single canonical event model every connector emits and the
-bus / L2 sink consume. 1:1 with the upstream Conduit `Record` (entity, key, sourceSystem,
-tenantId, data, operation, timestamp, lineage) so the stream stays Conduit-compatible — the
+bus / L2 sink consume. 1:1 with the upstream `Record` (entity, key, sourceSystem,
+tenantId, data, operation, timestamp, lineage) so the stream stays batch-compatible — the
 only L1 difference is that streams are continuous, so `operation` is always `DELTA`. It
 also owns the canonical dedup identity and the timezone-aware-timestamp guarantee.
 
@@ -445,10 +445,10 @@ also owns the canonical dedup identity and the timezone-aware-timestamp guarante
 |---|---|
 | `SignalEvent` (pydantic model) | the canonical event; `dedup_id` property; `_require_tz` validator (rejects naive timestamps) |
 | `SourceSystem` (enum) | `SLACK`, `EMAIL`, `CREW_DB`, `CONTRACT_CLM`, `VESSEL_PORT_DB` |
-| `Operation` (enum) | `DELTA` (L1 default), `SNAPSHOT` (Conduit batch parity) |
+| `Operation` (enum) | `DELTA` (L1 default), `SNAPSHOT` (upstream batch parity) |
 | `Lineage` | provenance: extraction_id, source_endpoint, source_sequence, checksum |
 
-Dependency-light (pydantic only) so it can be vendored back into Conduit unchanged.
+Dependency-light (pydantic only) so it can be vendored back upstream unchanged.
 
 ## 4.2 InMemoryBus
 

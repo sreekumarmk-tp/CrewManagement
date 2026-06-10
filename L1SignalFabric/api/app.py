@@ -23,7 +23,7 @@ from connectors.erp import ErpConnector, InMemoryOutboxAdapter
 from connectors.gmail import GmailClient, GmailConnector
 from connectors.notion import NotionClient, NotionConnector
 from connectors.outlook import OutlookClient, OutlookConnector
-from connectors.sharepoint import SharePointConnector
+from connectors.sharepoint import SharePointClient, SharePointConnector
 from connectors.slack import SlackConnector
 from core.bus import EventBus, InMemoryBus
 from core.watermark import FileWatermarkStore
@@ -127,13 +127,16 @@ def create_app(
     app.state.outlook = OutlookConnector(
         tenant_id=cfg.tenant_id,
         client=outlook_client,
+        mark_read=cfg.outlook_mark_as_read,
         client_state=cfg.outlook_client_state,
         dev_allow_unverified=cfg.outlook_dev_allow_unverified,
     )
 
+    sharepoint_client = _build_sharepoint_client(cfg)
     app.state.sharepoint = SharePointConnector(
         tenant_id=cfg.tenant_id,
-        client=None,  # targets/site ids are deployment-specific; wire via config
+        client=sharepoint_client,
+        folder_paths=cfg.sharepoint_folder_paths,
         client_state=cfg.sharepoint_client_state,
         dev_allow_unverified=cfg.sharepoint_dev_allow_unverified,
     )
@@ -185,16 +188,24 @@ def _build_gmail_client(cfg: Settings):
 
 
 def _build_outlook_client(cfg: Settings):
-    """Build an OutlookClient if Graph creds are present, else None (fixture mode)."""
-    from connectors.common import GraphClient
-    if cfg.outlook_access_token:
-        return OutlookClient(GraphClient(access_token=cfg.outlook_access_token),
-                             ingest_body=cfg.email_ingest_body)
-    if cfg.ms_tenant_id and cfg.ms_client_id and cfg.ms_client_secret:
-        return OutlookClient(GraphClient(tenant_id=cfg.ms_tenant_id,
-                                         client_id=cfg.ms_client_id,
-                                         client_secret=cfg.ms_client_secret),
-                             ingest_body=cfg.email_ingest_body)
+    """Build an OutlookClient if Graph app creds + mailbox are present (else None).
+
+    App-only (client-credentials) auth, so a target mailbox UPN is required —
+    there is no signed-in ``/me``. Blank creds => None (fixture/replay mode).
+    """
+    if (cfg.ms_tenant_id and cfg.ms_client_id and cfg.ms_client_secret
+            and cfg.outlook_mailbox_upn):
+        return OutlookClient(cfg.ms_tenant_id, cfg.ms_client_id, cfg.ms_client_secret,
+                             cfg.outlook_mailbox_upn, ingest_body=cfg.email_ingest_body)
+    return None
+
+
+def _build_sharepoint_client(cfg: Settings):
+    """Build a SharePointClient if Graph app creds + site are present (else None)."""
+    if (cfg.ms_tenant_id and cfg.ms_client_id and cfg.ms_client_secret
+            and cfg.sharepoint_hostname and cfg.sharepoint_site_path):
+        return SharePointClient(cfg.ms_tenant_id, cfg.ms_client_id, cfg.ms_client_secret,
+                                cfg.sharepoint_hostname, cfg.sharepoint_site_path)
     return None
 
 

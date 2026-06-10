@@ -271,12 +271,13 @@ class CriticAgent:
             ("Gmail (LIVE)", caps["gmail_connector"],
              "Pub/Sub push + OIDC/token verify + history backfill — verified end-to-end against a "
              "real Gmail tenant: a sent email flows push → /gmail/push → history expansion → EMAIL signal"),
-            ("Outlook (built · live PENDING)", caps["outlook_connector"],
-             "Graph mail webhook (validationToken + clientState) + delta poll — code built + "
-             "offline-tested, NOT yet verified against a real M365 tenant"),
-            ("SharePoint (built · live PENDING)", caps["sharepoint_connector"],
-             "Graph drives/lists delta + per-target change tokens + webhook handshake — code built + "
-             "offline-tested, NOT yet verified against a real SharePoint site"),
+            ("Outlook (LIVE)", caps["outlook_connector"],
+             "Graph mail webhook (validationToken + clientState) + unread poll — verified end-to-end "
+             "against a real M365 tenant: app-only token → Graph mail (Mail.Read) → live message → EMAIL signal"),
+            ("SharePoint (LIVE)", caps["sharepoint_connector"],
+             "Graph drives/lists delta + per-target change tokens + webhook handshake — verified "
+             "end-to-end against a real SharePoint site: Sites.Selected grant → site/drive resolve → "
+             "folder list → live drive_item signal"),
             ("Notion (built · live PENDING)", caps["notion_connector"],
              "pages/databases/blocks pull + watermark — code built + offline-tested, not live-verified"),
             ("Database (built · live PENDING)", caps["database_connector"],

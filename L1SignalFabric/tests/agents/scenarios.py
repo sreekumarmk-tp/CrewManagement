@@ -114,8 +114,8 @@ COMPONENTS: list[tuple[str, str]] = [
     ("connectors.slack", "Slack connector — verify + ingest + mappers"),
     ("connectors.erp", "ERP outbox connector"),
     ("connectors.gmail", "Gmail connector — Pub/Sub push + history"),
-    ("connectors.outlook", "Outlook connector — Graph mail webhook + delta"),
-    ("connectors.sharepoint", "SharePoint connector — Graph drives/lists delta"),
+    ("connectors.outlook", "Outlook connector — Graph mail app-only unread poll"),
+    ("connectors.sharepoint", "SharePoint connector — Graph app-only folder listing"),
     ("connectors.notion", "Notion connector — pages/blocks/properties"),
     ("connectors.database", "Generic SQL CDC/outbox connector"),
     ("connectors.common", "Shared infra — HTTP retry / secrets / writer / webhook"),
@@ -135,8 +135,10 @@ LIVE_STATUS: dict[str, tuple[str, str]] = {
     "slack":      ("LIVE",    "verified end-to-end against a real Slack workspace"),
     "gmail":      ("LIVE",    "verified end-to-end against a real Gmail tenant: OAuth refresh, "
                               "users.watch, Pub/Sub push → /gmail/push → history expansion → EMAIL signal"),
-    "outlook":    ("PENDING", "connector built + offline-tested; NOT verified vs a real Microsoft 365 tenant"),
-    "sharepoint": ("PENDING", "connector built + offline-tested; NOT verified vs a real SharePoint site"),
+    "outlook":    ("LIVE",    "verified end-to-end against a real Microsoft 365 tenant: app-only "
+                              "client-credentials token → Graph mail (Mail.Read) → live message → EMAIL signal"),
+    "sharepoint": ("LIVE",    "verified end-to-end against a real SharePoint site: app-only token → "
+                              "Sites.Selected grant → site/drive resolve → folder list → live drive_item signal"),
     "notion":     ("PENDING", "connector built + offline-tested; NOT verified vs a real Notion workspace"),
     "database":   ("PENDING", "connector built + offline-tested; NOT verified vs a real DB / CDC feed"),
 }
@@ -214,15 +216,12 @@ def _graph_msg(mid: str = "m1", subject: str = "Hello", categories=None) -> dict
             "receivedDateTime": "2024-06-01T10:00:00Z"}
 
 
-def _sp_drive_item(iid: str = "i1", removed: bool = False) -> dict:
-    item = {"id": iid, "name": "Crew.xlsx", "webUrl": "http://sp/i1", "size": 10,
-            "file": {"mimeType": "app/xlsx"},
-            "parentReference": {"driveId": "d1", "path": "/drive/root:/Crew"},
-            "lastModifiedDateTime": "2024-06-01T10:00:00Z",
-            "createdBy": {"user": {"id": "u1", "displayName": "Al"}}}
-    if removed:
-        item["@removed"] = {"state": "deleted"}
-    return item
+def _sp_item(iid: str = "i1", name: str = "Crew.xlsx", is_folder: bool = False) -> dict:
+    """A normalised SharePointClient.list_folder() item (app-only folder model)."""
+    return {"id": iid, "name": name, "size": 10,
+            "modified": "2024-06-01T10:00:00Z", "is_folder": is_folder,
+            "mime_type": None if is_folder else "app/xlsx",
+            "web_url": f"http://sp/{iid}"}
 
 
 # ============================================================================ #
@@ -490,37 +489,42 @@ def _u_outlook_verify() -> Probe:
                  {"handshake": hs.challenge, "good": good.outcome.value, "bad": bad.outcome.value}, "")
 
 
-def _u_outlook_delta_watermark() -> Probe:
+def _u_outlook_unread_poll() -> Probe:
     from connectors.outlook import OutlookConnector
 
     class FakeOutlook:
-        api_calls = 0
-        rate_limit_hits = 0
+        def __init__(self):
+            self.unread = [_graph_msg("m2"), _graph_msg("m1")]  # newest-first
+            self.marked: list[str] = []
 
-        def delta(self, folder="inbox", start=None, select=""):
-            if start:
-                return [], "link2"
-            return [_graph_msg("m1"), {"id": "m2", "@removed": {"reason": "deleted"}}], "link2"
+        def list_unread(self, top=50):
+            return [m for m in self.unread if m["id"] not in self.marked][:top]
 
-    c = OutlookConnector(tenant_id="t", client=FakeOutlook())
+        def mark_read(self, mid):
+            self.marked.append(mid)
+
+    fake = FakeOutlook()
+    c = OutlookConnector(tenant_id="t", client=fake)
     sigs = _run(c.poll())
     again = _run(c.poll())
-    ok = len(sigs) == 1 and c.position() == "link2" and again == []
-    return Probe(ok, "delta poll skips @removed, advances deltaLink, re-poll empty",
-                 {"emitted": len(sigs), "position": c.position(), "repoll": len(again)}, "")
+    ok = (len(sigs) == 2 and [s.key["message_id"] for s in sigs] == ["<m1>", "<m2>"]
+          and fake.marked == ["m1", "m2"] and again == [])
+    return Probe(ok, "unread poll emits oldest-first, marks read, re-poll empty",
+                 {"emitted": len(sigs), "marked": fake.marked, "repoll": len(again)}, "")
 
 
 # ---- connectors.sharepoint ----
 def _u_sharepoint_mappers() -> Probe:
-    from connectors.sharepoint import drive_item_to_signal, list_item_to_signal
-    d = drive_item_to_signal(_sp_drive_item(), "t", "d1")
-    li = list_item_to_signal({"id": "L1", "fields": {"Title": "V7", "Status": "Open"},
-                              "lastModifiedDateTime": "2024-06-02T00:00:00Z"}, "t", "site1", "list1")
-    ok = (d.entity == "drive_item" and d.key == {"drive_id": "d1", "item_id": "i1"}
-          and d.source_system == SourceSystem.SHAREPOINT and li.entity == "list_item"
-          and li.data["fields"]["Title"] == "V7")
-    return Probe(ok, "driveItem + listItem -> SignalEvent",
-                 {"drive_key": d.key, "list_title": li.data["fields"]["Title"]}, "")
+    from connectors.sharepoint import folder_item_to_signal
+    f = folder_item_to_signal(_sp_item(), "t", hostname="contoso.sharepoint.com",
+                              site_path="/sites/Crew", folder_path="Shared Documents/crew")
+    d = folder_item_to_signal(_sp_item("d1", "2024", is_folder=True), "t")
+    ok = (f.entity == "drive_item"
+          and f.key == {"site": "contoso.sharepoint.com/sites/Crew", "item_id": "i1"}
+          and f.data["kind"] == "file" and f.source_system == SourceSystem.SHAREPOINT
+          and d.data["kind"] == "folder")
+    return Probe(ok, "folder file + folder item -> SHAREPOINT drive_item SignalEvent",
+                 {"file_key": f.key, "folder_kind": d.data["kind"]}, "")
 
 
 def _u_sharepoint_verify() -> Probe:
@@ -530,33 +534,30 @@ def _u_sharepoint_verify() -> Probe:
     return Probe(ok, "subscription validationToken handshake", {"challenge": vr.challenge}, "")
 
 
-def _u_sharepoint_delta_watermark() -> Probe:
-    from connectors.sharepoint import DriveTarget, ListTarget, SharePointConnector
+def _u_sharepoint_folder_poll() -> Probe:
+    from connectors.sharepoint import SharePointConnector
 
     class FakeSP:
-        api_calls = 0
-        rate_limit_hits = 0
+        hostname = "contoso.sharepoint.com"
+        site_path = "/sites/Crew"
 
-        def drive_delta(self, drive_id, start=None):
-            if start:
-                return [], "dlink2"
-            return [_sp_drive_item("i1"), {"root": {}, "id": "root"}], "dlink2"
+        def __init__(self):
+            self.by_folder = {
+                "Shared Documents/crew": [_sp_item("i1"), _sp_item("d1", "2024", is_folder=True)],
+                "Shared Documents/ops":  [_sp_item("i2", "Ops.docx")],
+            }
 
-        def list_delta(self, site_id, list_id, start=None):
-            if start:
-                return [], "llink2"
-            return [{"id": "L1", "fields": {"Title": "V7"},
-                     "lastModifiedDateTime": "2024-06-02T00:00:00Z"}], "llink2"
+        def list_folder(self, folder):
+            return list(self.by_folder.get(folder, []))
 
     c = SharePointConnector(tenant_id="t", client=FakeSP(),
-                            targets=[DriveTarget("d1"), ListTarget("site1", "list1")])
+                            folder_paths=["Shared Documents/crew", "Shared Documents/ops"])
     sigs = _run(c.poll())
-    entities = sorted(s.entity for s in sigs)
-    snap = c.position()
-    ok = (entities == ["drive_item", "list_item"] and snap["sharepoint:drive:d1"] == "dlink2"
-          and snap["sharepoint:list:site1:list1"] == "llink2" and _run(c.poll()) == [])
-    return Probe(ok, "per-target delta tokens; root anchor skipped; re-poll empty",
-                 {"entities": entities, "watermarks": snap}, "")
+    ids = sorted(s.key["item_id"] for s in sigs)
+    ok = (ids == ["d1", "i1", "i2"] and all(s.entity == "drive_item" for s in sigs)
+          and _run(c.poll()) == [])
+    return Probe(ok, "folder listing across folders -> drive_item events; re-poll dedupes",
+                 {"item_ids": ids}, "")
 
 
 # ---- connectors.notion ----
@@ -888,35 +889,31 @@ def _i_gmail_signoff_to_l2() -> Probe:
 
 def _i_outlook_to_l2() -> Probe:
     from connectors.outlook import OutlookConnector
-    body = {"value": [{"subscriptionId": "s1", "resourceData": {"id": "m1"},
-                       "_message": _graph_msg(categories=["crew/sign-off"])}]}
-    evs = _run(OutlookConnector(tenant_id=_TENANT).ingest(body))
+    # Outlook ingests a Graph message resource (the unread poll's per-message shape).
+    evs = _run(OutlookConnector(tenant_id=_TENANT).ingest(
+        _graph_msg(categories=["crew/sign-off"])))
     _, store = _run(_pipe(evs))
     c = store.counts()
     ok = c["signoff"] == 1
-    return Probe(ok, "Outlook sign-off notification -> bus -> L2 SignOffEvent", c, "")
+    return Probe(ok, "Outlook sign-off message -> bus -> L2 SignOffEvent", c, "")
 
 
 def _i_sharepoint_to_l2() -> Probe:
-    from connectors.sharepoint import DriveTarget, ListTarget, SharePointConnector
+    from connectors.sharepoint import SharePointConnector
 
     class FakeSP:
-        api_calls = 0
-        rate_limit_hits = 0
+        hostname = "contoso.sharepoint.com"
+        site_path = "/sites/Crew"
 
-        def drive_delta(self, drive_id, start=None):
-            return ([_sp_drive_item("i1")], "dlink") if not start else ([], "dlink")
-
-        def list_delta(self, site_id, list_id, start=None):
-            return ([{"id": "L1", "fields": {"Title": "V7"},
-                      "lastModifiedDateTime": "2024-06-02T00:00:00Z"}], "llink") if not start else ([], "llink")
+        def list_folder(self, folder):
+            return [_sp_item("i1"), _sp_item("i2", "Manifest.pdf")]
 
     evs = _run(SharePointConnector(tenant_id=_TENANT, client=FakeSP(),
-                                   targets=[DriveTarget("d1"), ListTarget("site1", "list1")]).poll())
+                                   folder_paths=["Shared Documents/crew"]).poll())
     _, store = _run(_pipe(evs))
     c = store.counts()
     ok = c["total"] == 2 and c["by_kind"].get("node") == 2
-    return Probe(ok, "SharePoint delta poll -> bus -> two L2 nodes (drive + list item)", c, "")
+    return Probe(ok, "SharePoint folder poll -> bus -> two L2 nodes (drive items)", c, "")
 
 
 def _i_notion_to_l2() -> Probe:
@@ -1072,16 +1069,17 @@ SCENARIOS: list[Scenario] = [
        "a Graph message maps to a record and an OUTLOOK sign-off signal", _u_outlook_mapper, target=True),
     _s("u-outlook-verify", "Outlook webhook verify", UNIT, "outlook", ["connectors.outlook"],
        "validationToken handshake + clientState secret verification", _u_outlook_verify, target=True),
-    _s("u-outlook-delta", "Outlook delta watermark", UNIT, "outlook", ["connectors.outlook"],
-       "delta poll skips @removed items, advances the deltaLink, and re-poll is empty",
-       _u_outlook_delta_watermark, target=True),
+    _s("u-outlook-unread-poll", "Outlook unread poll", UNIT, "outlook", ["connectors.outlook"],
+       "unread poll emits oldest-first, marks each read, and re-poll is empty",
+       _u_outlook_unread_poll, target=True),
     _s("u-sharepoint-mappers", "SharePoint mappers", UNIT, "sharepoint", ["connectors.sharepoint"],
-       "driveItem and listItem map to canonical SHAREPOINT SignalEvents", _u_sharepoint_mappers, target=True),
+       "folder file + folder items map to canonical SHAREPOINT drive_item SignalEvents",
+       _u_sharepoint_mappers, target=True),
     _s("u-sharepoint-verify", "SharePoint webhook verify", UNIT, "sharepoint", ["connectors.sharepoint"],
        "the subscription validationToken handshake is echoed", _u_sharepoint_verify, target=True),
-    _s("u-sharepoint-delta", "SharePoint per-target delta", UNIT, "sharepoint", ["connectors.sharepoint"],
-       "drive + list deltas carry per-target change tokens; the root anchor is skipped; re-poll empty",
-       _u_sharepoint_delta_watermark, target=True),
+    _s("u-sharepoint-folder-poll", "SharePoint folder poll", UNIT, "sharepoint", ["connectors.sharepoint"],
+       "listing configured folders emits drive_item events and re-poll dedupes",
+       _u_sharepoint_folder_poll, target=True),
     _s("u-notion-blocks", "Notion block parser", UNIT, "notion", ["connectors.notion"],
        "the block parser flattens nested lists and renders code fences recursively", _u_notion_block_parser),
     _s("u-notion-props", "Notion properties", UNIT, "notion", ["connectors.notion"],
@@ -1098,7 +1096,7 @@ SCENARIOS: list[Scenario] = [
     _s("u-common-webhook", "secrets + Graph webhook", UNIT, "common", ["connectors.common"],
        "parse_timestamp normalizes to UTC; the Graph webhook verifier handshakes and checks clientState",
        _u_common_secrets_and_webhook),
-    _s("u-common-writer", "Conduit output writer", UNIT, "common", ["connectors.common"],
+    _s("u-common-writer", "Batch output writer", UNIT, "common", ["connectors.common"],
        "the OutputWriter emits one JSONL record per event", _u_common_writer),
     _s("u-demo-email", "demo email normalizer", UNIT, "demo.email_normalize", ["demo.email_normalize"],
        "routine and sign-off emails normalize metadata-only with tz-aware timestamps", _u_demo_email),

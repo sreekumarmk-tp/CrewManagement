@@ -1,6 +1,6 @@
 """Token / secret resolution + timestamp parsing — shared by every connector.
 
-Ported (and unified) from the Conduit scrapers' ``config.py`` helpers so every
+Ported (and unified) from the upstream scrapers' ``config.py`` helpers so every
 real connector resolves credentials the same way:
 
     1. an explicit literal value (CLI flag / config file)

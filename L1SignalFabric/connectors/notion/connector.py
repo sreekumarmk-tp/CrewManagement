@@ -1,13 +1,13 @@
 """Notion connector — watermark-checkpointed pull over pages & databases.
 
-Realizes the Conduit Notion *scraper* as an L1 pull connector. It discovers all
+Realizes the upstream Notion *scraper* as an L1 pull connector. It discovers all
 accessible pages and databases via ``search``, extracts each page's flattened
 block content (and each database row's properties), and emits canonical
 SignalEvents. The watermark is the newest ``last_edited_time`` emitted, so:
 
   * ``poll()`` only re-emits pages edited since the last run (incremental sync,
     the scraper's ``--since`` made automatic & crash-safe), and
-  * ``scrape()`` does a full pass to a Conduit-compatible JSONL bundle and/or the
+  * ``scrape()`` does a full pass to a batch-compatible JSONL bundle and/or the
     bus.
 
 Page-object construction, title extraction, user extraction and per-run metrics
@@ -169,7 +169,7 @@ class NotionConnector(PollingConnector):
             self.logger.info("notion poll", emitted=len(out), cursor=self._cursor)
         return out
 
-    # ---- full scrape (CLI / Conduit-compatible bundle) ----
+    # ---- full scrape (CLI / batch-compatible bundle) ----
     def scrape(self, writer: Optional[OutputWriter] = None,
                on_event: Optional[EmitFn] = None,
                since: Optional[datetime] = None) -> ScrapeMetrics:

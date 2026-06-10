@@ -1,4 +1,4 @@
-"""In-memory user-profile cache — ported from the Conduit Slack scraper.
+"""In-memory user-profile cache — ported from the upstream Slack scraper.
 
 Resolves a Slack user id to a :class:`~connectors.slack.models.SlackUser`
 (display name + e-mail) and caches the result — including failures — so a
