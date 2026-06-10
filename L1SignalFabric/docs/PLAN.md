@@ -11,13 +11,13 @@
 ## 1. Context & Goal
 
 L1 SignalFabric is the **continuous event-ingestion layer** that feeds the L2 knowledge graph
-(OrgMap + workflow nodes such as **SignOffEvent**). It extends the existing **Conduit**
+(OrgMap + workflow nodes such as **SignOffEvent**). It extends the existing **upstream**
 ingestion pattern from *batch snapshots* to *continuous streams*.
 
-Conduit today ships file/batch adapters: `SourceAdapter → FileExtractor` (Phase 1), with
+The upstream pipeline today ships file/batch adapters: `SourceAdapter → FileExtractor` (Phase 1), with
 `APIExtractor` (Phase 2) and `CDCExtractor` (Phase 3) **stubbed for the future**. The Python
 scrapers (Slack, Notion) pull history in batches and emit `*.jsonl` + `manifest.json`.
-**L1 SignalFabric realizes Conduit's Phase-3 event-stream vision**: real-time push connectors
+**L1 SignalFabric realizes the Phase-3 event-stream vision**: real-time push connectors
 that emit the same canonical `Record` shape as continuous `DELTA` operations instead of
 `SNAPSHOT` files.
 
@@ -25,7 +25,7 @@ that emit the same canonical `Record` shape as continuous `DELTA` operations ins
 
 We build the three highest-value streams first. They map onto **all five** prototype sources:
 
-| Focus area (build first) | Conduit source(s) covered | Feeds | Operation |
+| Focus area (build first) | Upstream source(s) covered | Feeds | Operation |
 |---|---|---|---|
 | **1. Slack Events API** — real-time webhook push (messages, reactions, channel joins) | Slack | OrgMap *tribal knowledge* only | `DELTA` |
 | **2. Gmail API (Workspace)** — Pub/Sub push, **metadata only** (sender, recipient, thread, ts) | email sign-off events | OrgMap + **SignOffEvent** node in L2 | `DELTA` |
@@ -47,31 +47,31 @@ We build the three highest-value streams first. They map onto **all five** proto
 ## 2. Target Architecture (what we build in `L1SignalFabric/`)
 
 A standalone **Python 3.12 / FastAPI** service (matches the project stack in
-[`README.md`](../../README.md)) that mirrors Conduit's interface ladder, but as a
+[`README.md`](../../README.md)) that mirrors the upstream interface ladder, but as a
 *push/stream* engine.
 
 ![Figure 1 — L1 SignalFabric connector architecture: real-time push ingress → connector → normalizer → event bus → L2 sink (OrgMap + SignOffEvent).](images/architecture.png)
 
-### 2.1 Core abstractions (mirror Conduit)
+### 2.1 Core abstractions (mirror the upstream pipeline)
 
-- **`EventStreamConnector`** — Phase-3 analogue of Conduit's `CDCExtractor`:
+- **`EventStreamConnector`** — Phase-3 analogue of the upstream `CDCExtractor`:
   `subscribe()`, `verify(req)`, `position()` (resume watermark), `emit() -> SignalEvent`.
-- **`SignalEvent`** — canonical record, 1:1 with Conduit's `Record`
+- **`SignalEvent`** — canonical record, 1:1 with the upstream `Record`
   (`entity`, `key`, `sourceSystem`, `tenantId`, `data`, `operation=DELTA`, `timestamp`,
-  `extractedAt`, `lineage`). Reusing the shape means L2/downstream stays Conduit-compatible.
-- **`SourceSystem`** — extends the Conduit enum (`SLACK`, `EMAIL` already exist;
+  `extractedAt`, `lineage`). Reusing the shape means L2/downstream stays batch-compatible.
+- **`SourceSystem`** — extends the upstream enum (`SLACK`, `EMAIL` already exist;
   add `CREW_DB`, `CONTRACT_CLM`, `VESSEL_PORT_DB` under an `ERP` family).
 - **`EventBus`** — `InMemoryBus` (Day 1 demo) → `RedisStreamsBus` (Day 4, durable + replay).
 - **`L2Sink`** — idempotent upsert into OrgMap; special-cases sign-off emails into a
   **SignOffEvent** node. At-least-once delivery + DLQ.
 - **`CheckpointStore`** — per-connector position for crash-safe resume (0 data loss).
 
-### 2.2 Why a new service, not an edit to Conduit
+### 2.2 Why a new service, not an edit to the upstream pipeline
 
 L1 SignalFabric is built as a standalone module that **vendors the contract** (the
 `Record`/`SourceSystem` shapes) into `L1SignalFabric/core/` and keeps wire compatibility, so
-the work can later be folded back into Conduit as its real Phase-3 `CDCExtractor`
-implementations — without modifying the existing Conduit codebase.
+the work can later be folded back upstream as its real Phase-3 `CDCExtractor`
+implementations — without modifying the existing upstream codebase.
 
 ---
 
@@ -171,7 +171,7 @@ count reconciles exactly. *(All 5 sources now streaming ✔)*
 **Goal:** everything streaming at once; tests pass live; docs ready for async review.
 
 - A + B together: run **Slack + Gmail + ERP** simultaneously into one consolidated dashboard;
-  finalize the **Design doc** (connector architecture, stream schema, Conduit-extension
+  finalize the **Design doc** (connector architecture, stream schema, upstream-extension
   approach, data-flow diagram) and **Test doc** (50-record ingestion, per-source latency,
   sign-off trigger, failure/retry).
 
@@ -198,7 +198,7 @@ checkout reproduces it.
 
 ## 6. Deliverables checklist (Due Jun 12, async review)
 
-**Design doc** — connector architecture · `SignalEvent` stream schema · Conduit-extension
+**Design doc** — connector architecture · `SignalEvent` stream schema · upstream-extension
 approach (Phase-3 `CDCExtractor`) · data-flow diagram.
 **Test doc** — 50-record ingestion test · latency test per source · sign-off trigger test ·
 failure/retry scenarios.

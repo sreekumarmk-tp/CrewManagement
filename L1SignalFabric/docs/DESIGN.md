@@ -4,7 +4,7 @@
 **Engineers:** Sreekumar M K, Sruthy
 **Status:** Prototype design (for async review, due Jun 12, 2026)
 **Prod target:** Jun 15, 2026
-**Source:** `L1SignalFabric/` (new standalone module — extends the Conduit pattern without modifying it)
+**Source:** `L1SignalFabric/` (new standalone module — extends the upstream batch pipeline without modifying it)
 
 ---
 
@@ -15,15 +15,15 @@ L1 SignalFabric is the **continuous event-ingestion layer**. It converts real-wo
 knowledge graph** consumes to build **OrgMap** (tribal knowledge) and workflow nodes such as
 **SignOffEvent**.
 
-It extends the **Conduit** medallion pipeline from *batch snapshots* to *continuous streams*.
-Conduit ships file/batch adapters today: `SourceAdapter → FileExtractor` is live (Phase 1);
+It extends the **upstream** medallion pipeline from *batch snapshots* to *continuous streams*.
+The upstream pipeline ships file/batch adapters today: `SourceAdapter → FileExtractor` is live (Phase 1);
 `APIExtractor` (Phase 2) and `CDCExtractor` (Phase 3) are stubbed for the future.
 **L1 SignalFabric realizes Phase 3**: push connectors emitting the same canonical `Record`
 shape as continuous `DELTA` operations.
 
 ### 1.1 In scope (prototype, build-first order)
 
-| # | Connector | Conduit source(s) | Feeds | Ingestion |
+| # | Connector | Upstream source(s) | Feeds | Ingestion |
 |---|---|---|---|---|
 | 1 | **Slack Events API** | Slack | OrgMap (tribal knowledge only) | webhook push |
 | 2 | **Gmail API (Workspace)** | email sign-off events | OrgMap + **SignOffEvent** | Pub/Sub push, **metadata only** |
@@ -32,7 +32,7 @@ shape as continuous `DELTA` operations.
 ### 1.2 Out of scope (prototype)
 
 - Email **body** content (Gmail = metadata only: sender, recipient, thread, timestamp).
-- Backfill/historical batch import (that is Conduit's existing file path).
+- Backfill/historical batch import (that is the upstream pipeline's existing file path).
 - L2 graph internals (we publish events; L2 owns graph mutation semantics beyond the sink).
 - Multi-tenant fan-out tuning (single tenant for proto; `tenantId` carried on every event).
 
@@ -55,7 +55,7 @@ shape as continuous `DELTA` operations.
 
 ### 2.2 The connector contract (`EventStreamConnector`)
 
-Phase-3 analogue of Conduit's stubbed `CDCExtractor` interface. Every connector implements the
+Phase-3 analogue of the upstream stubbed `CDCExtractor` interface. Every connector implements the
 same lifecycle so the core treats all sources uniformly.
 
 ```python
@@ -122,8 +122,8 @@ Two ingestion modes, one contract:
 
 ### 3.1 `SignalEvent` — the canonical record
 
-1:1 with Conduit's `Record` so downstream stays Conduit-compatible. Difference from Conduit's
-file path: `operation` is always **`DELTA`**.
+1:1 with the upstream `Record` so downstream stays batch-compatible. Difference from the
+upstream file path: `operation` is always **`DELTA`**.
 
 ```jsonc
 {
@@ -225,9 +225,9 @@ Headroom against the 5-min SLO is large; the SLO mainly guards Gmail's Pub/Sub d
 
 ---
 
-## 6. Conduit Extension Approach
+## 6. Upstream Extension Approach
 
-| Conduit concept | L1 SignalFabric realization |
+| Upstream concept | L1 SignalFabric realization |
 |---|---|
 | `CDCExtractor` (Phase 3, stubbed) | `EventStreamConnector` — `verify/ingest/position/commit` |
 | `SubscribeChanges()` | push routes (`/slack/events`, `/gmail/push`) + ERP outbox poller |
@@ -239,9 +239,9 @@ Headroom against the 5-min SLO is large; the SLO mainly guards Gmail's Pub/Sub d
 | Batch Slack scraper | replaced by push connectors (history → real-time) |
 
 **Why a separate service:** L1 SignalFabric lives in its own `L1SignalFabric/` module without
-modifying the existing Conduit codebase. We **vendor the contract** (`Record`/`SourceSystem`
+modifying the existing upstream codebase. We **vendor the contract** (`Record`/`SourceSystem`
 shapes) into `L1SignalFabric/core/` and keep wire compatibility, so this folds back into
-Conduit later as its real Phase-3 `CDCExtractor` implementations.
+the upstream pipeline later as its real Phase-3 `CDCExtractor` implementations.
 
 ---
 
