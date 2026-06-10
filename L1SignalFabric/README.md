@@ -82,7 +82,7 @@ curl -sX POST localhost:8001/slack/events -H 'content-type: application/json' -d
 L1 ships **six real source connectors** plus the ERP outbox. Each one follows the
 same `EventStreamConnector` contract and reuses the shared infrastructure in
 [`connectors/common/`](connectors/common/) (rate-limit + retry HTTP, pagination,
-Secrets-Manager token resolution, structured logging, Conduit-compatible output,
+Secrets-Manager token resolution, structured logging, batch-compatible output,
 watermark checkpointing). See [`connectors/README.md`](connectors/README.md) for
 the per-connector internals.
 
@@ -92,8 +92,8 @@ the per-connector internals.
 |------------|----------------------------------|--------------------------------------------|----------------|
 | Slack      | `POST /slack/events` (HMAC)      | Web-API backfill — channels/history/threads| `SLACK`        |
 | Gmail      | `POST /gmail/push` (token/OIDC)  | `history.list` since `historyId`           | `GMAIL`        |
-| Outlook    | `POST /outlook/webhook` (Graph)  | `messages/delta`                           | `OUTLOOK`      |
-| SharePoint | `POST /sharepoint/webhook` (Graph)| `drive`/`list` `delta` per target         | `SHAREPOINT`   |
+| Outlook    | `POST /outlook/webhook` (Graph)  | unread poll + mark-read (app-only)         | `OUTLOOK`      |
+| SharePoint | `POST /sharepoint/webhook` (Graph)| folder listing by path (app-only)         | `SHAREPOINT`   |
 | Notion     | —                                | `search` since `last_edited_time`          | `NOTION`       |
 | Database   | —                                | outbox `seq` / `updated_at` high-watermark | `DATABASE`     |
 
@@ -137,11 +137,12 @@ export GMAIL_REFRESH_TOKEN=1//...            # connector mints fresh access toke
 export GMAIL_PUBSUB_TOKEN=...                # shared-secret echoed on ?token= (push auth)
 export GMAIL_PUBSUB_TOPIC=projects/<project-id>/topics/gmail-signals   # default for `watch`
 
-# Outlook + SharePoint — Microsoft Graph (one app, two sources)
-export OUTLOOK_ACCESS_TOKEN=...              # or use the app-credential trio below
-export OUTLOOK_CLIENT_STATE=...              # secret echoed in webhook notifications
-export SHAREPOINT_CLIENT_STATE=...
+# Outlook + SharePoint — Microsoft Graph (one app-only app, two sources)
 export MS_TENANT_ID=...  MS_CLIENT_ID=...  MS_CLIENT_SECRET=...   # client-credentials grant
+export OUTLOOK_MAILBOX_UPN=mailbox@contoso.com                    # app-only has no /me
+# Optional — hands-off push (Graph change subscription); otherwise both just poll:
+export MS_WEBHOOK_BASE_URL=https://<public-host>   # /outlook/webhook + /sharepoint/webhook appended
+export OUTLOOK_CLIENT_STATE=...   SHAREPOINT_CLIENT_STATE=...     # secret echoed + verified on each notification
 
 # Notion
 export NOTION_TOKEN=ntn_...                  # internal integration token
@@ -179,8 +180,16 @@ curl -sX POST 'localhost:8001/gmail/push?token=$GMAIL_PUBSUB_TOKEN' \
 |--------------|--------------------------------|-------------------------------------------------|
 | Slack        | `/slack/events`                | Slack app → Event Subscriptions → Request URL   |
 | Gmail        | `/gmail/push`                  | `users.watch` → Pub/Sub push subscription       |
-| Outlook      | `/outlook/webhook`             | Graph `POST /subscriptions` (resource = mail)   |
-| SharePoint   | `/sharepoint/webhook`          | Graph `POST /subscriptions` (resource = drive/list) |
+| Outlook      | `/outlook/webhook`             | `connectors.outlook.cli subscribe` (or `make outlook-subscribe`) |
+| SharePoint   | `/sharepoint/webhook`          | `connectors.sharepoint.cli subscribe` (or `make sharepoint-subscribe`) |
+
+> **Outlook & SharePoint are hands-off-optional.** Both poll by default (no public
+> URL needed). To make changes arrive without polling, set `MS_WEBHOOK_BASE_URL` +
+> the `*_CLIENT_STATE` secrets and run `make outlook-subscribe` / `make
+> sharepoint-subscribe` — this `POST /subscriptions` to Graph so notifications push
+> to the webhook (which then kicks a poll). The server must be **publicly reachable**
+> when you subscribe (Graph validates the URL), and subscriptions expire at ~3 days,
+> so `… renew <id>` on a schedule. See [`docs/CONNECTOR_SETUP.md` §3.3/§4.2](docs/CONNECTOR_SETUP.md).
 
 > **Gmail push needs an active `watch`, not just credentials.** After configuring,
 > run `make gmail-watch` (re-run before the ~7-day expiry) and confirm the chain with
@@ -192,7 +201,7 @@ curl -sX POST 'localhost:8001/gmail/push?token=$GMAIL_PUBSUB_TOKEN' \
 ### Pull connectors — backfill / poll from the CLI
 
 Every connector has a CLI (`test` to verify creds; a `scrape`/`backfill`/`poll`
-that writes a **Conduit-compatible bundle** — `<source>.jsonl` + `manifest.json`
+that writes a **batch-compatible bundle** — `<source>.jsonl` + `manifest.json`
 + `metrics.json` — to `--output-dir`). Credentials use the same resolution order.
 
 ```bash
@@ -212,12 +221,15 @@ python -m connectors.gmail.cli test        # confirms creds; prints mailbox + hi
 python -m connectors.gmail.cli watch       # (re)register push; --topic defaults to GMAIL_PUBSUB_TOPIC
 python -m connectors.gmail.cli backfill --query "newer_than:30d"
 
-# Outlook — metadata-only Graph mail backfill (token or app creds)
-python -m connectors.outlook.cli backfill --token $OUTLOOK_ACCESS_TOKEN --folder inbox
+# Outlook — metadata-only Graph mail (app-only; creds + mailbox from .env or flags)
+python -m connectors.outlook.cli test          # confirms Graph mail access for OUTLOOK_MAILBOX_UPN
+python -m connectors.outlook.cli backfill --output-dir ./output   # unread messages → signals
+python -m connectors.outlook.cli subscribe     # (optional) hands-off push; needs MS_WEBHOOK_BASE_URL
 
-# SharePoint — drive items via Graph delta
-python -m connectors.sharepoint.cli test       --token <graph> --hostname contoso.sharepoint.com --site-path /sites/Crew
-python -m connectors.sharepoint.cli backfill   --token <graph> --drive-id <id>
+# SharePoint — app-only folder listing under one site's default document library
+python -m connectors.sharepoint.cli test       # resolves the site/drive, lists SHAREPOINT_FOLDER_PATH
+python -m connectors.sharepoint.cli backfill   --output-dir ./output   # drive_items → signals
+python -m connectors.sharepoint.cli subscribe  # (optional) hands-off push; needs MS_WEBHOOK_BASE_URL
 
 # Database — generic SQL CDC; resumes from the persisted watermark
 python -m connectors.database.cli test --url $DATABASE_URL
@@ -273,12 +285,12 @@ L1SignalFabric/
   core/                 # SignalEvent, EventStreamConnector, EventBus, dedup, watermark
   connectors/
     common/             # shared: rate-limit HTTP, Graph client, webhook verify,
-                        #   email mapper, writer, metrics, logger, secrets, poller
+                        #   Graph subscriptions, email mapper, writer, metrics, logger, secrets, poller
     slack/              # Events API (push) + Web-API backfill (pull) + client/cache/cli
     notion/             # pages/databases/blocks pull + block_parser + client + cli
     gmail/              # Pub/Sub push + history pull (metadata only) + verify + cli
-    outlook/            # Graph mail webhook + delta pull (metadata only) + cli
-    sharepoint/         # Graph drives/lists delta + webhook + cli
+    outlook/            # Graph mail: unread poll + mark-read + webhook + subscribe cli (metadata only)
+    sharepoint/         # Graph: app-only folder listing + webhook + subscribe cli
     database/           # generic SQL CDC/outbox adapters + connector + cli
     erp/                # original ERP outbox connector (Database generalizes it)
   api/

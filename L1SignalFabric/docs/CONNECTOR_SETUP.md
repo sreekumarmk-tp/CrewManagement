@@ -18,7 +18,7 @@ the demo still runs.
 | Need | Why | How |
 |---|---|---|
 | Python 3.11+ + deps | run the service & CLIs | `pip install -r requirements.txt` (add `.[postgres]`, `.[aws]`, `.[google]` as needed) |
-| A **public HTTPS URL** | Slack/Gmail/Outlook/SharePoint **push** webhooks must reach your host | `ngrok http 8001` (dev) or deploy to Cloud Run / a public host |
+| A **public HTTPS URL** | Slack/Gmail **push** webhooks must reach your host (Outlook & SharePoint **poll** by default; a public URL is only needed for the optional hands-off Graph subscription — 3.3/4.2) | `ngrok http 8001` (dev) or deploy to Cloud Run / a public host |
 | Admin rights | creating Slack apps, Google Cloud projects, Azure app registrations | workspace/tenant admin |
 
 **Expose the local service for webhooks (dev):**
@@ -30,7 +30,8 @@ export PUBLIC_URL=https://<random>.ngrok-free.app
 ```
 
 Pull-only connectors (Notion, Database, and the backfill CLIs) need **no** public
-URL — only the push connectors do.
+URL. Outlook & SharePoint poll by default (no URL needed) but can opt into
+hands-off push via a Graph change subscription (3.3/4.2), which does need one.
 
 ---
 
@@ -163,7 +164,13 @@ make gmail-doctor                       # walks the whole push chain, flags the 
 ## 3. Outlook (Microsoft Graph mail, metadata only)
 
 Outlook and SharePoint share **one Azure AD app registration** and the
-client-credentials grant. Set this up once; reuse for both.
+**client-credentials (app-only)** grant. Set this up once; reuse for both.
+
+The connector **polls the mailbox for unread messages** and **marks each as read**
+once emitted. Marking-as-read is the dedupe/checkpoint —
+a restart simply re-lists whatever is still unread, so there are no gaps or
+duplicates and nothing to persist. Because the flow is app-only there is no
+signed-in user, so a **target mailbox UPN is required** (`/me` is delegated-only).
 
 ### 3.1 Register the app (shared with SharePoint)
 1. <https://portal.azure.com> → **Azure Active Directory → App registrations →
@@ -176,85 +183,146 @@ client-credentials grant. Set this up once; reuse for both.
 
 | Permission | For |
 |---|---|
-| `Mail.Read` | Outlook mail (this section) |
-| `Sites.Read.All`, `Files.Read.All` | SharePoint (section 4) |
+| `Mail.ReadWrite` | Outlook mail — read **and** mark-as-read (this section) |
+| `Sites.Read.All` *or* `Sites.Selected` | SharePoint folder listing (section 4) |
 
-Then **Grant admin consent**.
+Then **Grant admin consent**. (`Mail.Read` alone suffices only if you set
+`OUTLOOK_MARK_AS_READ=0`; the default marks messages read and needs `Mail.ReadWrite`.)
 
-### 3.3 Create the change subscription (live push)
-Graph webhooks require the endpoint to answer the **validation handshake**
-(`validationToken`) within 10s — the connector does this automatically. Create the
-subscription (via Graph Explorer or `curl` with an app token):
+> **Least privilege for SharePoint:** prefer `Sites.Selected` over `Sites.Read.All`,
+> then grant the app read on just the one site (PnP:
+> `Grant-PnPAzureADAppSitePermission -AppId <client-id> -Permissions Read -Site <url>`,
+> or `POST /sites/{id}/permissions`). Without that per-site grant the site lookup
+> 404s even though auth succeeds. See section 4.
+
+### 3.3 (Optional) Create a change subscription — hands-off push
+The connector polls, so a webhook is **not required** — but a Graph **change
+subscription** makes mail arrive *hands-off*: Graph POSTs a notification to
+`/outlook/webhook` on each new message, which kicks an immediate unread-poll
+(no manual trigger). Graph validates the URL synchronously at create time
+(`validationToken` echoed within 10s — the connector does this automatically), so
+**start the server publicly first** (section 0).
+
+Register it with the connector CLI (no hand-rolled REST):
+```bash
+# reads MS_* + OUTLOOK_CLIENT_STATE + MS_WEBHOOK_BASE_URL from .env
+python -m connectors.outlook.cli subscribe          # or: make outlook-subscribe
+python -m connectors.outlook.cli subscriptions      # list id + expiry
+python -m connectors.outlook.cli renew <id>         # before it lapses (see below)
+```
+`MS_WEBHOOK_BASE_URL` is your public HTTPS base (e.g. the ngrok host); the CLI
+appends `/outlook/webhook`. `OUTLOOK_CLIENT_STATE` is a secret echoed in every
+notification and **verified constant-time** by the webhook — non-empty means
+pushes are authenticated, not dev-open. Under the hood the CLI sends:
 
 ```http
 POST https://graph.microsoft.com/v1.0/subscriptions
 {
   "changeType": "created",
-  "notificationUrl": "${PUBLIC_URL}/outlook/webhook",
-  "resource": "users/<mailbox-id>/mailFolders('inbox')/messages",
-  "expirationDateTime": "<now + 3 days, ISO 8601>",
+  "notificationUrl": "${MS_WEBHOOK_BASE_URL}/outlook/webhook",
+  "resource": "users/<mailbox-upn>/messages",
+  "expirationDateTime": "<now + ~70h, ISO 8601>",
   "clientState": "<OUTLOOK_CLIENT_STATE>"
 }
 ```
 
+> **Renewal:** Graph caps mail subscriptions at ~3 days. Run `renew <id>` on a
+> schedule (like `make gmail-watch`) before the printed `expires` time, or the
+> push goes silent and you fall back to manual polling.
+
 ### 3.4 Configure
 ```bash
-export MS_TENANT_ID=<tenant id>
+export MS_TENANT_ID=<tenant id>                 # client-credentials (app-only) grant
 export MS_CLIENT_ID=<client id>
-export MS_CLIENT_SECRET=<client secret>         # client-credentials grant (auto-acquires Graph token)
-export OUTLOOK_CLIENT_STATE=<secret in 3.3>     # authenticates inbound notifications
-# Or skip app creds and pass a ready Graph token directly:
-# export OUTLOOK_ACCESS_TOKEN=<graph access token>
+export MS_CLIENT_SECRET=<client secret>
+export OUTLOOK_MAILBOX_UPN=<mailbox@contoso.com>  # REQUIRED (app-only — no /me)
+# Optional:
+# export OUTLOOK_MARK_AS_READ=0                  # leave messages unread (default: marks read)
+# export OUTLOOK_CLIENT_STATE=<secret>           # hands-off push (3.3); verified on each notification
+# export MS_WEBHOOK_BASE_URL=https://<public-host>  # hands-off push (3.3); /outlook/webhook appended
 ```
 
 ### 3.5 Verify
 ```bash
 python -m connectors.outlook.cli test --tenant $MS_TENANT_ID \
-  --client-id $MS_CLIENT_ID --client-secret $MS_CLIENT_SECRET
-# send mail to the subscribed mailbox → an OUTLOOK/email signal appears.
+  --client-id $MS_CLIENT_ID --client-secret $MS_CLIENT_SECRET \
+  --mailbox $OUTLOOK_MAILBOX_UPN
+# prints how many unread messages were sampled. Send mail to that mailbox, then
+# poll → an OUTLOOK/email signal appears (subject "Sign-off notification" → SignOffEvent).
 ```
 
 ---
 
-## 4. SharePoint (Microsoft Graph drives & lists)
+## 4. SharePoint (Microsoft Graph — document-library folders)
 
-Reuses the Azure app from **section 3** (with `Sites.Read.All` / `Files.Read.All`
-consented). SharePoint pulls incrementally via Graph **delta** queries and can
-also receive change webhooks.
+Reuses the Azure app from **section 3** (with `Sites.Read.All` *or* `Sites.Selected`
+consented; add `Files.Read.All` only if you later download file content). One site
+is addressed by **hostname + server-relative path**; the connector resolves its
+default document library and **lists the configured folder(s) by path**, emitting a
+`drive_item` event per file/folder. Re-listing is idempotent — an in-process
+seen-set suppresses items already emitted.
 
-### 4.1 Find your site + drive/list ids
+> **`Sites.Selected` (least privilege):** the app sees only sites explicitly
+> granted to it. After consenting `Sites.Selected`, an admin grants read on the
+> target site (PnP `Grant-PnPAzureADAppSitePermission -AppId <client-id>
+> -Permissions Read -Site https://<host>/sites/<name>`, or `POST
+> /sites/{site-id}/permissions`). Symptom of a missing grant: `test` returns
+> **404 site lookup failed** while `/subscriptions` and mail still work.
+
+### 4.1 Find your site + folder
 ```bash
 python -m connectors.sharepoint.cli test \
   --tenant $MS_TENANT_ID --client-id $MS_CLIENT_ID --client-secret $MS_CLIENT_SECRET \
-  --hostname <contoso>.sharepoint.com --site-path /sites/<SiteName>
-# prints the site id and its drive ids
+  --hostname <contoso>.sharepoint.com --site-path /sites/<SiteName> \
+  --folder "Shared Documents/<your-folder>"
+# prints the resolved site id and the folder's immediate children (files + subfolders)
 ```
 
-### 4.2 (Optional) Create a change subscription
+### 4.2 (Optional) Create a change subscription — hands-off push
+The connector polls, so a webhook is **not required** — but a Graph **change
+subscription** makes site changes arrive *hands-off*: Graph POSTs to
+`/sharepoint/webhook` on any change in the document library, which kicks a folder
+poll. The subscription targets the **drive root** (`changeType: updated` is the
+only type `driveItem` supports). Start the server publicly first (Graph validates
+the URL at create time).
+
+Register it with the connector CLI (resolves the drive id for you):
+```bash
+# reads MS_* + SHAREPOINT_* + SHAREPOINT_CLIENT_STATE + MS_WEBHOOK_BASE_URL from .env
+python -m connectors.sharepoint.cli subscribe       # or: make sharepoint-subscribe
+python -m connectors.sharepoint.cli subscriptions   # list id + expiry
+python -m connectors.sharepoint.cli renew <id>      # before it lapses (~3 days)
+```
+Under the hood:
 ```http
 POST https://graph.microsoft.com/v1.0/subscriptions
 {
   "changeType": "updated",
-  "notificationUrl": "${PUBLIC_URL}/sharepoint/webhook",
+  "notificationUrl": "${MS_WEBHOOK_BASE_URL}/sharepoint/webhook",
   "resource": "drives/<drive-id>/root",
-  "expirationDateTime": "<now + 3 days, ISO 8601>",
+  "expirationDateTime": "<now + ~70h, ISO 8601>",
   "clientState": "<SHAREPOINT_CLIENT_STATE>"
 }
 ```
 
 ### 4.3 Configure
 ```bash
-# app creds from section 3 are reused; just add:
-export SHAREPOINT_CLIENT_STATE=<secret in 4.2>
-# (delta targets — drive/list ids — are deployment-specific; wire them when constructing
-#  SharePointConnector(targets=[DriveTarget(...), ListTarget(...)]) or use the backfill CLI)
+# app creds from section 3 are reused; add the site + folder(s) to watch:
+export SHAREPOINT_HOSTNAME=<contoso>.sharepoint.com
+export SHAREPOINT_SITE_PATH=/sites/<SiteName>
+export SHAREPOINT_FOLDER_PATH="Shared Documents/<folder>"   # comma/newline-separated for several
+# Optional:
+# export SHAREPOINT_CLIENT_STATE=<secret>                   # hands-off push (4.2); verified on each notification
+# export MS_WEBHOOK_BASE_URL=https://<public-host>          # hands-off push (4.2); /sharepoint/webhook appended
 ```
 
 ### 4.4 Verify
 ```bash
 python -m connectors.sharepoint.cli backfill \
   --tenant $MS_TENANT_ID --client-id $MS_CLIENT_ID --client-secret $MS_CLIENT_SECRET \
-  --drive-id <drive id> --output-dir ./output    # writes sharepoint.jsonl + manifest + metrics
+  --hostname $SHAREPOINT_HOSTNAME --site-path $SHAREPOINT_SITE_PATH \
+  --folder "$SHAREPOINT_FOLDER_PATH" --output-dir ./output
+# writes sharepoint.jsonl + manifest + metrics for the folder's items (metadata only)
 ```
 
 ---
@@ -354,14 +422,16 @@ export L1_TENANT_ID=maritime-acme
 make run
 curl localhost:8001/healthz        # lists every live connector + its source_system
 
-# 3) register the push webhooks at ${PUBLIC_URL}/{slack/events,gmail/push,
-#    outlook/webhook,sharepoint/webhook}  (sections 1.3, 2.2, 3.3, 4.2)
+# 3) register the push webhooks at ${PUBLIC_URL}/{slack/events,gmail/push}
+#    (sections 1.3, 2.2). Outlook & SharePoint: poll by default, OR go hands-off
+#    with `make outlook-subscribe` / `make sharepoint-subscribe` (3.3, 4.2)
 
 # 4) open the dashboard, then act in each app
 open http://localhost:8001/
 #    - Slack: post a message / add a reaction / join a channel
 #    - Gmail/Outlook: send a mail (subject "Sign-off notification" → SignOffEvent)
-#    - Notion: edit a shared page;   Database: update a row;   SharePoint: edit a file
+#    - Notion: edit a shared page;   Database: update a row
+#    - SharePoint: add/edit a file in the watched folder (SHAREPOINT_FOLDER_PATH)
 #    Each change flows ingress → normalizer → bus → L2 store and scrolls live.
 ```
 
@@ -371,8 +441,8 @@ open http://localhost:8001/
 |---|---|
 | Slack | `SLACK_SIGNING_SECRET`, `SLACK_TOKEN` |
 | Gmail | `GMAIL_CLIENT_ID`+`GMAIL_CLIENT_SECRET`+`GMAIL_REFRESH_TOKEN` *(or a short-lived `GMAIL_ACCESS_TOKEN`)*; `GMAIL_PUBSUB_TOKEN` *(or `GMAIL_OIDC_AUDIENCE`)*; `GMAIL_PUBSUB_TOPIC`, `GMAIL_PUSH_ENDPOINT` |
-| Outlook | `OUTLOOK_ACCESS_TOKEN` *or* `MS_TENANT_ID`+`MS_CLIENT_ID`+`MS_CLIENT_SECRET`; `OUTLOOK_CLIENT_STATE` |
-| SharePoint | `MS_TENANT_ID`+`MS_CLIENT_ID`+`MS_CLIENT_SECRET` *(or `SHAREPOINT_ACCESS_TOKEN`)*; `SHAREPOINT_CLIENT_STATE` |
+| Outlook | `MS_TENANT_ID`+`MS_CLIENT_ID`+`MS_CLIENT_SECRET`+`OUTLOOK_MAILBOX_UPN`; optional `OUTLOOK_MARK_AS_READ`, `OUTLOOK_CLIENT_STATE`+`MS_WEBHOOK_BASE_URL` *(hands-off push)* |
+| SharePoint | `MS_TENANT_ID`+`MS_CLIENT_ID`+`MS_CLIENT_SECRET`+`SHAREPOINT_HOSTNAME`+`SHAREPOINT_SITE_PATH`+`SHAREPOINT_FOLDER_PATH`; optional `SHAREPOINT_CLIENT_STATE`+`MS_WEBHOOK_BASE_URL` *(hands-off push)* |
 | Notion | `NOTION_TOKEN` |
 | Database | `DATABASE_URL`, `DATABASE_OUTBOX_TABLE`, `DATABASE_WATERMARK_PATH` |
 | All | `L1_TENANT_ID` |
@@ -394,6 +464,11 @@ open http://localhost:8001/
 | Gmail `authorize` → `403 access_denied` | consent screen in Testing and your account isn't a **Test user** — add it (2.3.1), or publish the app |
 | Gmail push arrives but `ingested: 0` | no server credential to expand history — set the refresh-token trio (2.5); `make gmail-doctor` flags this |
 | Gmail email doesn't trigger anything | no active `watch` (run 2.4 / `make gmail-watch`), or the push subscription points at a stale ngrok URL — `make gmail-doctor` |
-| Outlook/SharePoint 401 on notifications | `*_CLIENT_STATE` env var ≠ the `clientState` set when creating the subscription |
+| Outlook connector missing / never polls | `OUTLOOK_MAILBOX_UPN` unset — app-only auth has no `/me`, so the target mailbox is required (3.4) |
+| Outlook `mark_read` fails with 403 | app has `Mail.Read` but not `Mail.ReadWrite`; grant it (3.2) or set `OUTLOOK_MARK_AS_READ=0` |
+| SharePoint `folder not found` / `site lookup failed` | wrong `SHAREPOINT_HOSTNAME`/`SITE_PATH`/`FOLDER_PATH`; or, with `Sites.Selected`, the app was never granted this site (3.2); or `Sites.Read.All` not admin-consented |
+| Outlook/SharePoint 401 on notifications | `*_CLIENT_STATE` env var ≠ the `clientState` set when the subscription was created — re-`subscribe` after changing it |
+| `subscribe` fails URL validation | server not publicly reachable at `MS_WEBHOOK_BASE_URL` when you ran it — Graph echoes the `validationToken` synchronously; start the tunnel + server first |
+| Push went silent after a few days | the Graph subscription expired (~3-day cap) — `… subscriptions` to check, then `… renew <id>`; schedule it like `make gmail-watch` |
 | Notion `list-pages` empty | the integration hasn't been added to any page (section 5.2) |
 | Connector missing from `/healthz` | its credentials aren't set → still in fixture mode (expected) |

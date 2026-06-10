@@ -89,6 +89,10 @@ class GraphClient:
         self._ensure_token()
         return self._http.post(path, json=json)
 
+    def patch(self, path: str, json: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        self._ensure_token()
+        return self._http.request("PATCH", path, json=json)
+
     def delete(self, path: str) -> Dict[str, Any]:
         self._ensure_token()
         return self._http.request("DELETE", path)

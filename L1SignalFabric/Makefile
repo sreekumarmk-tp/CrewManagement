@@ -1,4 +1,4 @@
-.PHONY: install test run dashboard up down demo smoke seed stream stream-live clean gmail-authorize gmail-watch gmail-doctor docs
+.PHONY: install test run dashboard up down demo smoke seed stream stream-live clean gmail-authorize gmail-watch gmail-doctor docs outlook-subscribe sharepoint-subscribe outlook-subscriptions sharepoint-subscriptions
 
 PY ?= python3
 PORT ?= 8001
@@ -69,6 +69,23 @@ gmail-authorize:
 # GMAIL_ACCESS_TOKEN — plus GMAIL_PUBSUB_TOPIC from .env.
 gmail-watch:
 	$(PY) -m connectors.gmail.cli watch
+
+# --- Microsoft Graph push (Outlook + SharePoint change subscriptions) ---
+# Register hands-off push: Graph POSTs to MS_WEBHOOK_BASE_URL/<src>/webhook on
+# change. The server must be publicly reachable there (Graph validates on create).
+# Reads MS_* creds + MS_WEBHOOK_BASE_URL + *_CLIENT_STATE from .env.
+outlook-subscribe:
+	$(PY) -m connectors.outlook.cli subscribe
+sharepoint-subscribe:
+	$(PY) -m connectors.sharepoint.cli subscribe
+
+# List / renew status. Graph caps mail + driveItem subscriptions at ~3 days, so
+# renew on a schedule: `make outlook-subscriptions` to get the id, then
+# `$(PY) -m connectors.outlook.cli renew <id>` (same for sharepoint).
+outlook-subscriptions:
+	$(PY) -m connectors.outlook.cli subscriptions
+sharepoint-subscriptions:
+	$(PY) -m connectors.sharepoint.cli subscriptions
 
 # Regenerate the Word docs from their markdown sources (needs pandoc:
 # `apt-get install pandoc` / `brew install pandoc`).
